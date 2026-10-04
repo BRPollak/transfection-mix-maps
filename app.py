@@ -24,11 +24,14 @@ st.set_page_config(page_title=f"Generate transfection mix maps · v{VERSION}", p
                    initial_sidebar_state="collapsed")
 
 UI_VERSION = 3
+# Increment when parsing, calculations, or workbook output semantics change so
+# a live session must regenerate results without migrating saved preferences.
+CALCULATION_REVISION = 1
 FIELDS = {
     "final_volume_ul": ("Final volume to be delivered to each well (µL)", "Before the well overage factor is applied."),
     "dna_to_reagent_ratio_ul_per_ug": ("Transfectant ratio (µL / µg DNA)", "Transfectant volume per microgram of DNA."),
     "well_overage_factor": ("Well overage factor", "1.3 prepares 30% extra for each well."),
-    "bulk_overage_factor": ("Bulk overage factor", "Additional overage for the L2000 bulk reagent tube."),
+    "bulk_overage_factor": ("Bulk overage factor", "The same additional overage applies to every L2000 bulk transfectant mix."),
 }
 PREF_KEYS = ["reagent_choice", "output_folder", "sheet_url", "credentials_path"]
 PREF_KEYS += [f"{r}_{field}" for r in ("LT1", "L2000") for field in FIELDS]
@@ -248,7 +251,7 @@ def google_section():
     return snapshot, ready
 
 
-def show_result(result):
+def show_result(result, config):
     artifacts = result["artifacts"]
     count = len(artifacts)
     label = "workbook" if count == 1 else "workbooks"
@@ -273,12 +276,43 @@ def show_result(result):
                                key="download_" + artifact["name"],
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", on_click="ignore")
             summary = artifact["summary"]
-            st.dataframe(summary[["Well", "Total DNA_ng", "Total working DNA_uL", "DNA diluent_uL", "Reagent_uL"]],
+            prepared_volume = config["final_volume_ul"] * config["well_overage_factor"]
+            st.caption(f"Prepare {prepared_volume:.3f} µL per DNA-containing well, including well overage. "
+                       f"Deliver {config['final_volume_ul']:.3f} µL of the completed mixture to each destination well.")
+            volume_columns = ["Well", "Total DNA_ng", "Total working DNA_uL", "DNA diluent_uL"]
+            if artifact["bulk"]:
+                volume_columns += ["Bulk transfectant mix", "Transfection mix target_uL"]
+            else:
+                volume_columns += ["Reagent_uL"]
+            st.dataframe(summary[volume_columns].rename(columns={
+                "Total DNA_ng": "DNA to deliver (ng)",
+                "Total working DNA_uL": "DNA stock volume to prepare (µL)",
+                "DNA diluent_uL": "DNA diluent to prepare (µL)",
+                "Transfection mix target_uL": "Bulk aliquot to add (µL)",
+                "Reagent_uL": "LT1 to prepare (µL)",
+            }),
                          hide_index=True, width="stretch")
             st.dataframe(summary.pivot(index="Row", columns="Col", values="Mix").fillna(""), width="stretch")
             if artifact["bulk"]:
-                bulk = artifact["bulk"]
-                st.write(f"**Bulk reagent tube:** {bulk['Bulk reagent_uL']:.3f} µL reagent + {bulk['Bulk diluent_uL']:.3f} µL diluent = {bulk['Bulk total_uL']:.3f} µL total.")
+                mixes = artifact["bulk"]["mixes"]
+                st.markdown("**Bulk transfectant mixes**")
+                st.caption("Prepare each recipe in its own labeled tube. Add the listed aliquot only to the DNA "
+                           "mixtures for its assigned wells, then deliver the final volume shown above. "
+                           f"Every recipe includes the same {config['well_overage_factor']:g}× well overage "
+                           f"and {config['bulk_overage_factor']:g}× bulk overage.")
+                recipes = pd.DataFrame([{
+                    "Mix": mix["Mix"],
+                    "DNA to deliver per well (ng)": mix["Total DNA_ng"],
+                    "Assigned wells": ", ".join(mix["Wells"]),
+                    "L2000 to prepare (µL)": mix["Bulk reagent_uL"],
+                    "Diluent to prepare (µL)": mix["Bulk diluent_uL"],
+                    "Total to prepare (µL)": mix["Bulk total_uL"],
+                    "Aliquot per DNA mixture (µL)": mix["Per-well transfection mix_uL"],
+                } for mix in mixes])
+                st.dataframe(recipes, hide_index=True, width="stretch")
+                st.markdown("**Bulk mix assignments by well**")
+                st.dataframe(summary.pivot(index="Row", columns="Col", values="Bulk transfectant mix").fillna(""),
+                             width="stretch")
 
 
 def plate_section():
@@ -386,7 +420,9 @@ def main():
         with columns[i % 2]:
             st.number_input(label, min_value=0.001, step=0.1, format="%.3f", key=f"{reagent}_{field}",
                             help=help_text, on_change=persist)
-    st.caption("L2000 prepares separate DNA and bulk reagent tubes." if reagent == "L2000" else "LT1 prepares one complete mix per well.")
+    st.caption("L2000 prepares separate DNA mixtures and up to five bulk transfectant mixes per plate, "
+               "one for each distinct positive total DNA mass." if reagent == "L2000" else
+               "LT1 prepares one complete mix per well.")
     st.button(f"Restore {reagent} defaults", on_click=restore_selected_reagent)
 
     st.subheader("4 · Save your workbooks" if multiple_plates else "4 · Save your workbook")
@@ -422,6 +458,7 @@ def main():
     preferences()  # Retain hidden reagent settings when Streamlit removes their widgets.
     ready = bool(plate_ready and sheet_ready and destination and destination.is_dir())
     fingerprint = hashlib.sha256(json.dumps({
+        "calculation_revision": CALCULATION_REVISION,
         "plates": [{"path": p["path"], "name": p["name"], "hash": hashlib.sha256(p["bytes"]).hexdigest()} for p in plates],
         "snapshot": snapshot, "reagent": reagent,
         "config": configs[reagent],
@@ -429,7 +466,7 @@ def main():
     }, sort_keys=True).encode()).hexdigest()
     if st.session_state.get("result") and st.session_state.get("result_fingerprint") != fingerprint:
         st.session_state.pop("result", None)
-        st.info("Inputs changed. Generate again to preview results for these settings.")
+        st.info("Inputs or calculations changed. Generate again to preview results for these settings.")
     generate_label = (f"Generate {len(plates)} {reagent} Excel mix maps" if multiple_plates else
                       f"Generate {reagent} Excel mix map")
     if st.button(generate_label, type="primary", disabled=not ready, width="stretch"):
@@ -447,7 +484,7 @@ def main():
     if not ready:
         st.caption("Confirm Google sign-in, load your Sheet, choose valid plate CSVs, and select an output folder to generate.")
     if st.session_state.get("result"):
-        show_result(st.session_state.result)
+        show_result(st.session_state.result, configs[reagent])
     st.divider()
     st.caption("Benjamin Pollak | brpollak@uscd.edu")
 

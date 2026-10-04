@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3 — October 4, 2026
+
+Source update. No v0.3 installer has been built or published with these changes.
+
+- Prepare up to five separate L2000 bulk transfectant mixes per plate, grouped
+  by positive total DNA mass. Number mixes by descending well count, breaking
+  ties by the earliest physical row and then column. All mixes use the same
+  well and bulk overage factors. More than five groups blocks the entire batch.
+- Show each bulk mix's recipe and assigned wells in the app and a dedicated
+  printable workbook sheet. Label each populated Mix Map well with its assigned
+  bulk transfectant mix and aliquot volume, so identification works in black and
+  white without relying on color.
+- Distinguish overage-inclusive preparation amounts from the final amount to
+  deliver for LT1 and L2000.
+- Normalize well identifiers before calculation and duplicate detection, reject
+  column zero, and reject populated wide-format rows with missing wells.
+- Validate complete DNA-mass values and ng units; malformed expressions and
+  incompatible units produce source-row errors instead of altered values.
+- Reject ambiguous concentration columns and explicitly unsupported units for
+  used stocks while continuing to tolerate unrelated worksheet problems.
+- Preserve CSV plasmid identifiers such as `00123` and `NA`, and write source
+  labels as literal Excel text rather than formulas.
+- Update the app and project version to 0.3. Existing cached calculation results
+  require regeneration, while saved reagent preferences remain available.
+
 ## 0.2 — October 4, 2026
 
 Source update. No v0.2 installer was built or published with these changes.

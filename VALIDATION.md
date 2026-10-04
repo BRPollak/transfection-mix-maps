@@ -1,13 +1,44 @@
-# Version 0.2 validation
+# Version 0.3 validation
 
 Updated October 4, 2026.
 
-## Version 0.2 source verification
+## Version 0.3 source verification
 
-- **99 automated tests pass** with `.venv/bin/python -m pytest -q`, covering
+All **206 automated tests pass** with `.venv/bin/python -m pytest -q`, including
+**21 interface tests**. `git diff --check` also passes.
+
+App, project, lockfile, and launcher fallback agree on **0.3**. The bundle builder
+uses the same app version for its metadata. `uv lock --check --offline` passes
+without changing dependency versions.
+
+The current revision adds regression coverage for grouped L2000 recipes and
+their well assignments, a maximum of five distinct positive DNA totals per
+plate, uniform overage factors, and preparation versus delivery instructions.
+Input regression cases cover canonical well coordinates, column zero,
+malformed masses and unsupported units, populated rows missing wells,
+ambiguous concentration columns, identifier preservation, and literal Excel
+labels. Interface checks exercise mixed-mass results and failure without new
+output when a plate exceeds the five-group limit.
+
+Synthetic 48-well LT1 and five-mix L2000 workbooks were rendered through
+LibreOffice to Letter-landscape PDFs and visually inspected. The L2000 map and
+recipe sheet were also inspected in grayscale: every populated well carries its
+full numbered mix name and aliquot, and each recipe lists its assigned wells.
+Identification does not depend on color. Preparation/delivery instructions,
+five-mix legends, and all 48 well labels were readable without clipping in these
+fixtures. This is digital print-layout verification, not a physical print test
+or a claim of identical rendering in every spreadsheet application.
+
+Live Google sign-in, real native picker interactions, and physical printouts
+remain unverified for this revision. No v0.3 installer has been built or tested.
+The historical checks below do not imply packaged verification of these changes.
+
+## Version 0.2 source verification (historical)
+
+- **99 automated tests passed** with `.venv/bin/python -m pytest -q`, covering
   the interface, plate preview, Google source handling, workflow, and native
   dialog wrappers.
-- App, project, and lockfile versions agree on `0.2`; the offline lockfile check
+- App, project, and lockfile versions agreed on `0.2`; the offline lockfile check
   passed. All nine allowlisted app/configuration files exist for future packaging.
 - Sheet scans no longer block on unrelated tabs or incomplete unused stocks.
   Tests cover absent, blank, invalid, and conflicting plate-used concentrations,
@@ -40,7 +71,7 @@ Updated October 4, 2026.
 - Populated browser checks used a temporary fixture-seeded wrapper; automated
   picker tests use simulated native selections. Live Google authentication and
   real native file selection remain outside this revision's verification scope.
-- This revision is the v0.2 source update. No v0.2 installer was built or tested.
+- That revision was the v0.2 source update. No v0.2 installer was built or tested.
   The packaging allowlist includes `plate_preview.py` for a future build. All
   packaged-app checks below refer only to the published v0.1 build.
 
@@ -129,8 +160,9 @@ the value comparison. That comparison used the notebook's original configuration
 including the 1,500 µL L2000 default. The current 25 µL L2000 default was explicitly
 requested and changes the resulting volume values. The historical parity result
 applies when both implementations receive the same configuration; it is not a
-claim that the new default produces the old default's outputs. The calculation
-methods and Excel layout functions remain unchanged.
+claim that the new default produces the old default's outputs. The v0.3
+grouped L2000 calculations and workbook layout now differ from the historical
+notebook; that comparison does not validate the newly changed behavior.
 
 The previous warm-process local trial generated the two reagent workbooks in
 0.191 seconds. That historical synthetic benchmark excludes startup, file

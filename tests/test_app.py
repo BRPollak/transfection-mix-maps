@@ -1,10 +1,14 @@
+import hashlib
+import json
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
 from streamlit.testing.v1 import AppTest
 
 import native_dialogs
 import sources
+from workflow import default_configs
 
 APP = Path(__file__).resolve().parents[1] / "app.py"
 FIXTURES = APP.parent / "tests" / "fixtures"
@@ -145,6 +149,49 @@ def test_verified_sheet_generates_only_selected_reagent(monkeypatch, tmp_path):
     assert at.session_state.result["folder"] == str(tmp_path)
 
 
+def test_l2000_results_show_separate_recipes_and_well_assignments(monkeypatch, tmp_path):
+    at, _ = connected(monkeypatch, tmp_path)
+    plate = tmp_path / "plate.csv"
+    plate.write_text("Well,Plasmid,Mass (ng)\nB2,Example_A,300\nA2,Example_A,100\nA1,Example_A,100\n")
+    button(at, "Choose plate CSVs…").click().run()
+    at.radio(key="reagent_choice").set_value("L2000").run()
+    button(at, "Generate L2000 Excel mix map").click().run()
+    assert not at.exception
+    assert not at.error
+    recipes = next(table.value for table in at.dataframe if "Assigned wells" in table.value.columns)
+    assert recipes["Mix"].tolist() == ["Bulk transfectant mix 1", "Bulk transfectant mix 2"]
+    assert recipes["Assigned wells"].tolist() == ["A1, A2", "B2"]
+    assert recipes["L2000 to prepare (µL)"].tolist() == pytest.approx([0.576, 0.864])
+    assert recipes["Total to prepare (µL)"].tolist() == pytest.approx([36, 18])
+    assert recipes["Aliquot per DNA mixture (µL)"].tolist() == pytest.approx([15, 15])
+    assignment = at.dataframe[-1].value
+    assert assignment.loc["A", 1] == "Bulk transfectant mix 1"
+    assert assignment.loc["A", 2] == "Bulk transfectant mix 1"
+    assert assignment.loc["B", 2] == "Bulk transfectant mix 2"
+    assert assignment.loc["B", 1] == ""
+    assert len(list(tmp_path.glob("*.xlsx"))) == 1
+
+
+def test_l2000_six_mass_groups_clear_previous_result_without_new_output(monkeypatch, tmp_path):
+    at, _ = connected(monkeypatch, tmp_path)
+    at.radio(key="reagent_choice").set_value("L2000").run()
+    button(at, "Generate L2000 Excel mix map").click().run()
+    assert not at.exception
+    assert "result" in at.session_state
+    existing_outputs = {path.name: path.read_bytes() for path in tmp_path.glob("*.xlsx")}
+    plate = tmp_path / "plate.csv"
+    plate.write_text("Well,Plasmid,Mass (ng)\n" + "".join(
+        f"A{index},Example_A,{index * 100}\n" for index in range(1, 7)))
+    button(at, "Choose plate CSVs…").click().run()
+    button(at, "Generate L2000 Excel mix map").click().run()
+    assert not at.exception
+    assert len(at.error) == 1
+    assert "No output was created." in at.error[0].value
+    assert "result" not in at.session_state
+    assert not at.get("download_button")
+    assert {path.name: path.read_bytes() for path in tmp_path.glob("*.xlsx")} == existing_outputs
+
+
 def test_refresh_failure_blocks_saved_snapshot(monkeypatch, tmp_path):
     at, _ = connected(monkeypatch, tmp_path)
     monkeypatch.setattr(sources, "refresh_google", Mock(side_effect=sources.MixMapError("Cannot refresh Sheet")))
@@ -165,6 +212,29 @@ def test_generation_failure_clears_result(monkeypatch, tmp_path):
     assert not at.exception
     assert at.error
     assert "result" not in at.session_state
+
+
+def test_old_calculation_fingerprint_clears_lt1_result_without_removing_workbook(monkeypatch, tmp_path):
+    at, snapshot = connected(monkeypatch, tmp_path)
+    button(at, "Generate LT1 Excel mix map").click().run()
+    assert not at.exception
+    assert "result" in at.session_state
+    existing_outputs = {path.name: path.read_bytes() for path in tmp_path.glob("*.xlsx")}
+    # Recreate the pre-revision fingerprint using exactly the same run inputs.
+    old_fingerprint = hashlib.sha256(json.dumps({
+        "plates": [{"path": plate["path"], "name": plate["name"],
+                    "hash": hashlib.sha256(plate["bytes"]).hexdigest()}
+                   for plate in at.session_state.plates],
+        "snapshot": snapshot, "reagent": "LT1", "config": default_configs()["LT1"],
+        "output": str(tmp_path), "sheet_ready": True,
+    }, sort_keys=True).encode()).hexdigest()
+    assert at.session_state.result_fingerprint != old_fingerprint
+    at.session_state.result_fingerprint = old_fingerprint
+    at.run()
+    assert not at.exception
+    assert "result" not in at.session_state
+    assert not at.get("download_button")
+    assert {path.name: path.read_bytes() for path in tmp_path.glob("*.xlsx")} == existing_outputs
 
 
 def test_plate_folder_auto_selection_manual_override_and_cancel(monkeypatch, tmp_path):
