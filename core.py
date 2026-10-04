@@ -8,6 +8,7 @@ import os
 import re
 import unicodedata
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
@@ -153,32 +154,21 @@ def normalize_header(value):
 
 
 def clean_cell(value):
-    if value is None:
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
         return ""
-    if isinstance(value, float) and math.isnan(value):
-        return ""
-    text = str(value).strip()
-    if text.lower() in {"nan", "none", "null"}:
-        return ""
-    return text
+    return str(value).strip()
 
 
 def parse_float(value):
-    if value is None:
+    """Read a complete DNA mass in ng, never extract digits from other text."""
+    match = re.fullmatch(
+        r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(?:ng)?",
+        clean_cell(value), flags=re.IGNORECASE,
+    )
+    if match is None:
         return None
-    if isinstance(value, float) and math.isnan(value):
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    cleaned = re.sub(r"[^0-9eE+\-.]", "", text)
-    if cleaned in {"", ".", "+", "-"}:
-        return None
-    try:
-        number = float(cleaned)
-        return number if math.isfinite(number) else None
-    except ValueError:
-        return None
+    number = float(match.group(1))
+    return number if math.isfinite(number) else None
 
 
 def extract_spreadsheet_id(text):
@@ -250,15 +240,31 @@ def find_plasmid_name_column(columns):
     return None
 
 
+def normalize_unit_header(value):
+    return normalize_header(str(value).replace("µ", "u").replace("μ", "u"))
+
+
+def concentration_columns(columns):
+    """Keep every candidate, including duplicate labels, for ambiguity checks."""
+    candidates = []
+    for col in columns:
+        norm = normalize_unit_header(col)
+        if ("concentration" in norm or re.search(r"\bconc\b", str(col), re.I)
+                or norm.startswith("concng")
+                or norm in {"ngul", "ngperul", "ngmicroliter", "ngpermicroliter"}):
+            candidates.append(col)
+    return candidates
+
+
 def find_concentration_column(columns):
-    normalized = {col: normalize_header(col) for col in columns}
-    for col, norm in normalized.items():
-        if "concentration" in norm:
-            return col
-    for col, norm in normalized.items():
-        if norm in {"conc", "ngul", "ngperul", "ngmicroliter"}:
-            return col
-    return None
+    candidates = concentration_columns(columns)
+    return candidates[0] if candidates else None
+
+
+def concentration_header_supported(column):
+    norm = normalize_unit_header(column)
+    unit = re.sub(r"(?:concentrations?|conc|plasmid|dna|stock)", "", norm)
+    return unit in {"", "ngul", "ngperul", "ngmicroliter", "ngpermicroliter"}
 
 
 def parse_concentration(value):
@@ -291,7 +297,8 @@ def scan_concentration_tables(tables):
             continue
         columns = list(frame.columns)
         name_col = find_plasmid_name_column(columns)
-        conc_col = find_concentration_column(columns)
+        conc_candidates = concentration_columns(columns)
+        conc_col = conc_candidates[0] if conc_candidates else None
         item.update(header_row=int(frame.attrs.get("header_row", 1)),
                     plasmid_column=name_col, concentration_column=conc_col)
         if name_col is None:
@@ -299,9 +306,9 @@ def scan_concentration_tables(tables):
         mapping_issue = None
         if conc_col is None:
             mapping_issue = "concentration column is missing or unrecognized"
-        elif name_col == conc_col or columns.count(conc_col) != 1:
+        elif name_col == conc_col or len(conc_candidates) != 1:
             mapping_issue = "concentration column is ambiguous"
-        elif re.search(r"(?:[uµμ]g|mg)\s*(?:/|per)|ng\s*(?:/|per)\s*ml", str(conc_col), re.I):
+        elif not concentration_header_supported(conc_col):
             mapping_issue = "concentration units must be ng/µL"
         name_positions = [index for index, column in enumerate(columns) if column == name_col]
         if len(name_positions) != 1:
@@ -406,10 +413,21 @@ def slot_number(col):
     return match.group(1) if match else None
 
 
+def validate_mass_column(column):
+    norm = normalize_unit_header(column)
+    units = re.sub(r"(?:mass|total|desired|amount|dna|\d+)", "", norm)
+    if units not in {"", "ng", "nanogram", "nanograms"}:
+        raise MixMapError(
+            "Unsupported DNA mass units in plate CSV",
+            details=[f"Mass column {column!r} must contain masses in ng."],
+            fixes=["Convert DNA masses to ng and label the column Mass (ng), or Mass1 (ng) for wide format."],
+        )
+
+
 def parse_well(well):
     text = clean_cell(well).upper().replace(" ", "")
     match = re.fullmatch(r"([A-Z]+)0*([0-9]+)", text)
-    if not match:
+    if not match or int(match.group(2)) < 1:
         raise ValueError(f"Malformed well value: {well!r}")
     return match.group(1), int(match.group(2))
 
@@ -468,7 +486,7 @@ def detect_wide_pairs(columns):
         if is_mass_column(col):
             slot = slot_number(col)
             if slot:
-                mass_cols[slot] = col
+                mass_cols.setdefault(slot, []).append(col)
 
     if not plasmid_cols:
         return []
@@ -476,35 +494,43 @@ def detect_wide_pairs(columns):
     pairs = []
     unnumbered_mass_cols = [col for col in columns if is_mass_column(col) and slot_number(col) is None]
     for slot, plasmid_col in sorted(plasmid_cols.items(), key=lambda item: int(item[0])):
-        mass_col = mass_cols.get(slot)
-        if mass_col is None and len(plasmid_cols) == 1 and len(unnumbered_mass_cols) == 1:
-            mass_col = unnumbered_mass_cols[0]
-        if mass_col is None:
+        candidates = list(mass_cols.get(slot, []))
+        if len(plasmid_cols) == 1:
+            candidates.extend(unnumbered_mass_cols)
+        if len(candidates) > 1:
+            raise MixMapError(
+                "Ambiguous DNA mass columns in wide-format CSV",
+                details=[f"Slot {slot} has multiple mass columns: {', '.join(repr(col) for col in candidates)}."],
+                fixes=[f"Keep exactly one Mass{slot} (ng) column for Plasmid{slot}."],
+            )
+        if not candidates:
             raise MixMapError(
                 "Wide-format CSV has a plasmid column without a matching mass column",
                 details=[f"Found {plasmid_col!r} but no matching mass column for slot {slot}."],
                 fixes=[f"Add a Mass{slot} (ng) column, or rename the existing mass column so it has the same slot number."],
             )
-        pairs.append((slot, plasmid_col, mass_col))
+        pairs.append((slot, plasmid_col, candidates[0]))
     return pairs
 
 
 def detect_long_columns(columns):
     well_col = find_well_column(columns)
     plasmid_col = None
-    mass_col = None
 
     for col in columns:
         norm = normalize_header(col)
         if norm in {"plasmid", "plasmidname", "construct", "dna"} or ("plasmid" in norm and "name" in norm):
             plasmid_col = col
             break
-    for col in columns:
-        if is_mass_column(col):
-            mass_col = col
-            break
-    if well_col and plasmid_col and mass_col:
-        return well_col, plasmid_col, mass_col
+    mass_columns = [col for col in columns if is_mass_column(col)]
+    if well_col and plasmid_col and mass_columns:
+        if len(mass_columns) > 1:
+            raise MixMapError(
+                "Ambiguous DNA mass columns in long-format CSV",
+                details=[f"Found multiple mass columns: {', '.join(repr(col) for col in mass_columns)}."],
+                fixes=["Keep exactly one Mass (ng) column for the requested plasmid mass."],
+            )
+        return well_col, plasmid_col, mass_columns[0]
     return None
 
 
@@ -528,15 +554,21 @@ def standardize_plate_csv(raw_df):
     well_records = []
     seen_wells = set()
     well_occurrences = {}
+    canonical_wells = []
     for csv_row_index, value in raw_df[well_col].items():
-        well = clean_cell(value).upper().replace(" ", "")
+        well = clean_cell(value)
         if not well:
+            canonical_wells.append("")
             continue
         row_label, col_index = parse_well_or_raise(well, csv_row=int(csv_row_index) + 2, column_name=well_col)
+        well = f"{row_label}{col_index}"
+        canonical_wells.append(well)
         well_occurrences.setdefault(well, []).append(int(csv_row_index) + 2)
         if well not in seen_wells:
             seen_wells.add(well)
             well_records.append({"Well": well, "Row": row_label, "Col": col_index})
+    raw_df = raw_df.copy()
+    raw_df[well_col] = canonical_wells
 
     if not well_records:
         raise MixMapError(
@@ -549,6 +581,8 @@ def standardize_plate_csv(raw_df):
     long_records = []
 
     if wide_pairs:
+        for _, _, mass_col in wide_pairs:
+            validate_mass_column(mass_col)
         duplicate_wells = {well: rows for well, rows in well_occurrences.items() if len(rows) > 1}
         if duplicate_wells:
             details = [f"{well}: CSV rows {', '.join(map(str, rows))}" for well, rows in list(duplicate_wells.items())[:20]]
@@ -563,10 +597,15 @@ def standardize_plate_csv(raw_df):
                 ],
             )
         for csv_row_index, row in raw_df.iterrows():
-            well = clean_cell(row.get(well_col)).upper().replace(" ", "")
+            well = row[well_col]
             if not well:
+                if any(clean_cell(value) for value in row):
+                    raise MixMapError(
+                        "Missing well value in wide-format CSV",
+                        details=[f"CSV row {int(csv_row_index) + 2} contains data but has no well."],
+                        fixes=["Fill the Well column for every populated row, or remove the entire row."],
+                    )
                 continue
-            parse_well_or_raise(well, csv_row=int(csv_row_index) + 2, column_name=well_col)
             for slot, plasmid_col, mass_col in wide_pairs:
                 plasmid = clean_cell(row.get(plasmid_col))
                 raw_mass = clean_cell(row.get(mass_col))
@@ -615,10 +654,11 @@ def standardize_plate_csv(raw_df):
                 ],
             )
         well_col, plasmid_col, mass_col = long_cols
+        validate_mass_column(mass_col)
         slot_counter = {}
         for csv_row_index, row in raw_df.iterrows():
             row_num = int(csv_row_index) + 2
-            well = clean_cell(row.get(well_col)).upper().replace(" ", "")
+            well = row[well_col]
             plasmid = clean_cell(row.get(plasmid_col))
             raw_mass = clean_cell(row.get(mass_col))
             mass_ng = parse_float(row.get(mass_col))
@@ -651,7 +691,6 @@ def standardize_plate_csv(raw_df):
             if mass_ng == 0:
                 warnings.append(f"CSV row {row_num}, well {well}, plasmid {plasmid!r} has 0 ng and was skipped.")
                 continue
-            parse_well_or_raise(well, csv_row=row_num, column_name=well_col)
             slot_counter[well] = slot_counter.get(well, 0) + 1
             long_records.append(
                 {
@@ -779,10 +818,14 @@ def calculate_mix(wells_df, matched_df, config):
     details["Working DNA volume_uL"] = details["Base DNA volume_uL"] * config["well_overage_factor"]
 
     summary_rows = []
+    mass_keys = {}
     for _, well in wells_df.iterrows():
         well_name = well["Well"]
         subset = details[details["Well"] == well_name] if not details.empty else pd.DataFrame()
-        total_mass = float(subset["Mass_ng"].sum()) if not subset.empty else 0.0
+        # Sum decimal representations so 0.1 + 0.2 and 0.3 use the same tube,
+        # without rounding genuinely different requested masses together.
+        mass_keys[well_name] = sum((Decimal(str(value)) for value in subset["Mass_ng"]), Decimal(0))
+        total_mass = float(mass_keys[well_name])
         total_dna_working = float(subset["Working DNA volume_uL"].sum()) if not subset.empty else 0.0
         reagent_working = (
             total_mass / 1000.0
@@ -808,6 +851,10 @@ def calculate_mix(wells_df, matched_df, config):
                 fixes=["Use reagent mode two_tube or single_tube in REAGENT_CONFIGS."],
             )
 
+        if total_mass == 0:
+            dna_mix_target = transfection_mix_target = 0.0
+            dna_diluent = transfection_diluent = 0.0
+
         summary_rows.append(
             {
                 "Well": well_name,
@@ -824,6 +871,14 @@ def calculate_mix(wells_df, matched_df, config):
         )
 
     summary = pd.DataFrame(summary_rows)
+
+    numeric_columns = [column for column in summary if column.endswith(("_ng", "_uL"))]
+    if (not all(math.isfinite(value) for value in details["Working DNA volume_uL"])
+            or not all(math.isfinite(value) for value in summary[numeric_columns].to_numpy().flat)):
+        raise MixMapError(
+            "The inputs produce non-finite calculated volumes",
+            fixes=["Check DNA masses, stock concentrations, and reagent settings for extreme values."],
+        )
 
     bad_dna = summary[(summary["Total DNA_ng"] > 0) & (summary["DNA diluent_uL"] < -1e-9)]
     bad_transfection = summary[
@@ -856,7 +911,7 @@ def calculate_mix(wells_df, matched_df, config):
             "Some wells need more volume than the configured mix allows",
             details=details_lines,
             fixes=[
-                "Increase final_volume_ul or reduce well_overage_factor.",
+                "Increase final_volume_ul.",
                 "Reduce requested DNA mass for the listed wells.",
                 "Use a more concentrated plasmid prep for the largest DNA contributors.",
                 "For L2000/two-tube mode, remember only half of final_volume_ul is available for the DNA/diluent tube before overage.",
@@ -888,6 +943,55 @@ def calculate_mix(wells_df, matched_df, config):
             f"{len(tiny_dna)} DNA component volume(s) are below 0.200 uL and may be difficult to pipette accurately. Examples: {summarize_list(examples, 12)}."
         )
 
+    bulk = {}
+    if config.get("mode") == "two_tube":
+        grouped = {}
+        for index, row in summary[summary["Total DNA_ng"] > 0].iterrows():
+            grouped.setdefault(mass_keys[row["Well"]], []).append(index)
+        position = lambda index: (row_sort_key(summary.at[index, "Row"]), int(summary.at[index, "Col"]))
+        ordered = sorted(grouped.items(), key=lambda item: (-len(item[1]), min(map(position, item[1]))))
+        if len(ordered) > 5:
+            raise MixMapError(
+                "L2000 supports at most 5 different total DNA masses per plate",
+                details=[f"This plate has {len(ordered)} different positive total DNA masses."] + [
+                    f"{mass:g} ng: {summarize_list(summary.loc[sorted(indices, key=position), 'Well'].tolist())}"
+                    for mass, indices in ordered
+                ],
+                fixes=["Use at most five total DNA masses per plate, or split this layout into separate plates."],
+            )
+        summary["Bulk transfectant mix"] = ""
+        mixes = []
+        for number, (mass, indices) in enumerate(ordered, 1):
+            indices = sorted(indices, key=position)
+            group = summary.loc[indices]
+            label = f"Bulk transfectant mix {number}"
+            summary.loc[indices, "Bulk transfectant mix"] = label
+            bulk_overage = config.get("bulk_overage_factor", 1.0)
+            reagent_total = float(group["Reagent_uL"].sum()) * bulk_overage
+            diluent_total = float(group["Transfection diluent_uL"].sum()) * bulk_overage
+            mix = {
+                "Mix": label,
+                "Total DNA_ng": float(mass),
+                "Wells": group["Well"].tolist(),
+                "Nonempty wells": len(indices),
+                "Well overage factor": config["well_overage_factor"],
+                "Bulk overage factor": bulk_overage,
+                "Bulk reagent_uL": reagent_total,
+                "Bulk diluent_uL": diluent_total,
+                "Bulk total_uL": reagent_total + diluent_total,
+                "Per-well DNA mix_uL": config["final_volume_ul"] * config["well_overage_factor"] / 2.0,
+                "Per-well transfection mix_uL": config["final_volume_ul"] * config["well_overage_factor"] / 2.0,
+            }
+            if not all(math.isfinite(value) for key, value in mix.items() if key.endswith("_uL")):
+                raise MixMapError("The inputs produce non-finite bulk volumes",
+                                  fixes=["Check the reagent settings for extreme values."])
+            mixes.append(mix)
+            if 0 < reagent_total < 1.0:
+                warnings.append(
+                    f"{label}: {config['reagent_label']} total is below 1.000 uL; consider increasing bulk overage or preparing a larger master mix."
+                )
+        bulk = {"mixes": mixes}
+
     mix_strings = []
     for _, row in summary.iterrows():
         if row["Total DNA_ng"] <= 0:
@@ -901,28 +1005,10 @@ def calculate_mix(wells_df, matched_df, config):
         parts.append(f"{config['diluent_label']}: {max(row['DNA diluent_uL'], 0.0):.3f}")
         if config.get("mode") == "single_tube":
             parts.append(f"{config['reagent_label']}: {row['Reagent_uL']:.3f}")
+        else:
+            parts.append(f"Add {row['Transfection mix target_uL']:.3f} uL {row['Bulk transfectant mix']}")
         mix_strings.append("\n".join(parts))
     summary["Mix"] = mix_strings
-
-    bulk = {}
-    if config.get("mode") == "two_tube":
-        nonempty = summary[summary["Total DNA_ng"] > 0]
-        bulk_overage = config.get("bulk_overage_factor", 1.0)
-        reagent_total = nonempty["Reagent_uL"].sum() * bulk_overage
-        diluent_total = nonempty["Transfection diluent_uL"].sum() * bulk_overage
-        bulk = {
-            "Nonempty wells": int(len(nonempty)),
-            "Bulk overage factor": bulk_overage,
-            "Bulk reagent_uL": reagent_total,
-            "Bulk diluent_uL": diluent_total,
-            "Bulk total_uL": reagent_total + diluent_total,
-            "Per-well DNA mix_uL": config["final_volume_ul"] * config["well_overage_factor"] / 2.0,
-            "Per-well transfection mix_uL": config["final_volume_ul"] * config["well_overage_factor"] / 2.0,
-        }
-        if 0 < bulk["Bulk reagent_uL"] < 1.0:
-            warnings.append(
-                f"Bulk {config['reagent_label']} total is below 1.000 uL; consider increasing bulk overage or preparing a larger master mix."
-            )
 
     return details, summary, bulk, warnings
 
@@ -959,6 +1045,14 @@ def number_format_for_column(col_name):
     return None
 
 
+def literal_cell(ws, row, column, value):
+    """Keep source labels literal, including strings beginning with '='."""
+    cell = ws.cell(row, column, value)
+    if isinstance(value, str):
+        cell.data_type = "s"
+    return cell
+
+
 def write_dataframe(ws, df, start_row=1, start_col=1, freeze=True):
     header_fill = PatternFill("solid", fgColor="D9EAF7")
     thin = Side(border_style="thin", color="D0D7DE")
@@ -966,7 +1060,7 @@ def write_dataframe(ws, df, start_row=1, start_col=1, freeze=True):
     body_font = Font(name="Arial", size=10)
 
     for col_idx, col_name in enumerate(df.columns, start=start_col):
-        cell = ws.cell(start_row, col_idx, col_name)
+        cell = literal_cell(ws, start_row, col_idx, col_name)
         cell.font = header_font
         cell.fill = header_fill
         cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -977,7 +1071,7 @@ def write_dataframe(ws, df, start_row=1, start_col=1, freeze=True):
             value = row[col_name]
             if value is not None and pd.isna(value):
                 value = None
-            cell = ws.cell(row_idx, col_idx, value)
+            cell = literal_cell(ws, row_idx, col_idx, value)
             cell.font = body_font
             cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
             cell.alignment = Alignment(wrap_text=True, vertical="top")
@@ -1006,7 +1100,7 @@ def write_dataframe(ws, df, start_row=1, start_col=1, freeze=True):
 def write_merged_note(ws, row_idx, last_col, text, fill, font, alignment=None):
     if last_col > 1:
         ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=last_col)
-    cell = ws.cell(row_idx, 1, text)
+    cell = literal_cell(ws, row_idx, 1, text)
     cell.fill = fill
     cell.font = font
     cell.alignment = alignment or Alignment(wrap_text=True, vertical="center")
@@ -1040,6 +1134,9 @@ def format_well_mix_lines(row, details, config):
     lines.append(f"{format_volume_ul(row['DNA diluent_uL'])}  {shorten_label(config['diluent_label'])}")
     if config.get("mode") == "single_tube":
         lines.append(f"{format_volume_ul(row['Reagent_uL'])}  {shorten_label(config['reagent_label'])}")
+    else:
+        lines.append(row["Bulk transfectant mix"])
+        lines.append(f"Add {format_volume_ul(row['Transfection mix target_uL'])}")
     return lines
 
 
@@ -1060,6 +1157,61 @@ def apply_print_settings(ws, last_col, last_row):
     ws.print_area = f"A1:{get_column_letter(last_col)}{last_row}"
 
 
+BULK_MIX_COLORS = ("DDEBF7", "E2F0D9", "FFF2CC", "E4DFEC", "FCE4D6")
+
+
+def write_bulk_mixes_sheet(wb, bulk, config):
+    """Printable recipes, using the same labels and colors as the plate map."""
+    ws = wb.create_sheet("Bulk transfectant mixes")
+    title_font = Font(name="Arial", bold=True, size=15)
+    body_font = Font(name="Arial", size=11)
+    white = PatternFill("solid", fgColor="FFFFFF")
+    write_merged_note(ws, 1, 4, "L2000 bulk transfectant mixes", white, title_font)
+    ws.row_dimensions[1].height = 26
+    write_merged_note(ws, 2, 4,
+                      f"Recipes include well overage x{config['well_overage_factor']:g} and bulk overage "
+                      f"x{config.get('bulk_overage_factor', 1.0):g}. Use the same factors for every mix.",
+                      white, body_font)
+    ws.row_dimensions[2].height = 30
+    write_merged_note(ws, 3, 4,
+                      f"Prepare {format_volume_ul(config['final_volume_ul'] * config['well_overage_factor'])} "
+                      f"combined mix per DNA-containing well; deliver {format_volume_ul(config['final_volume_ul'])} to each of those wells. "
+                      "Preparation includes extra for pipetting loss.", white, body_font)
+    ws.row_dimensions[3].height = 30
+    row = 5
+    for number, mix in enumerate(bulk["mixes"]):
+        fill = PatternFill("solid", fgColor=BULK_MIX_COLORS[number])
+        write_merged_note(ws, row, 4,
+                          f"{mix['Mix']} | {mix['Total DNA_ng']:.12g} ng DNA/well | {mix['Nonempty wells']} wells",
+                          fill, Font(name="Arial", bold=True, size=12))
+        ws.row_dimensions[row].height = 25
+        recipe = (
+            f"Prepare: {format_volume_ul(mix['Bulk reagent_uL'])} {config['reagent_label']} + "
+            f"{format_volume_ul(mix['Bulk diluent_uL'])} {config['diluent_label']} = "
+            f"{format_volume_ul(mix['Bulk total_uL'])} total.\n"
+            f"For each assigned well: combine {format_volume_ul(mix['Per-well DNA mix_uL'])} DNA mix "
+            f"with {format_volume_ul(mix['Per-well transfection mix_uL'])} of this bulk transfectant mix."
+        )
+        write_merged_note(ws, row + 1, 4, recipe, white, body_font)
+        ws.row_dimensions[row + 1].height = 38
+        wells = "Assigned wells: " + ", ".join(mix["Wells"])
+        write_merged_note(ws, row + 2, 4, wells, white, body_font)
+        ws.row_dimensions[row + 2].height = max(20, 15 * math.ceil(len(wells) / 110))
+        row += 4
+    for column in "ABCD":
+        ws.column_dimensions[column].width = 30
+    apply_print_settings(ws, 4, row - 1)
+    ws.freeze_panes = "A5"
+
+    # Keep machine-readable recipe amounts on the same sheet, outside the
+    # printable recipe cards. Numeric cells retain full calculation precision.
+    records = [{**mix, "Wells": ", ".join(mix["Wells"])} for mix in bulk["mixes"]]
+    write_dataframe(ws, pd.DataFrame(records), start_row=row + 1, freeze=False)
+    # write_dataframe sizes columns for the numeric table; restore print widths.
+    for column in "ABCD":
+        ws.column_dimensions[column].width = 30
+
+
 def write_mix_map_workbook(
     output_path,
     csv_name,
@@ -1077,7 +1229,8 @@ def write_mix_map_workbook(
     ws.title = "Mix Map"
 
     rows = contiguous_rows(summary["Row"].tolist())
-    cols = list(range(1, int(summary["Col"].max()) + 1))
+    # Even a sparse plate needs enough printable width for preparation notes.
+    cols = list(range(1, max(8, int(summary["Col"].max())) + 1))
     start_col = 2
     last_col = start_col + len(cols) - 1
 
@@ -1119,24 +1272,34 @@ def write_mix_map_workbook(
     notes = []
     if config.get("mode") == "two_tube":
         notes.append(
-            f"Bulk transfection tube: {format_volume_ul(bulk['Bulk reagent_uL'])} {config['reagent_label']} + "
-            f"{format_volume_ul(bulk['Bulk diluent_uL'])} {config['diluent_label']} = "
-            f"{format_volume_ul(bulk['Bulk total_uL'])} total for {bulk['Nonempty wells']} wells."
+            "Prepare separate tubes using the Bulk transfectant mixes sheet. "
+            "Each well below names its assigned mix and the aliquot to add to its DNA mix."
         )
         notes.append(
-            f"Per well: prepare the DNA mix shown in the plate, then combine "
-            f"{format_volume_ul(bulk['Per-well DNA mix_uL'])} DNA mix + "
-            f"{format_volume_ul(bulk['Per-well transfection mix_uL'])} bulk transfection mix."
+            f"Prepare {format_volume_ul(config['final_volume_ul'] * config['well_overage_factor'] / 2)} "
+            f"DNA mix + the designated bulk aliquot = "
+            f"{format_volume_ul(config['final_volume_ul'] * config['well_overage_factor'])} combined mix per well."
         )
     else:
-        notes.append("Per well: pipette the complete DNA/diluent/reagent mix shown in each plate position.")
-        notes.append(f"Configured final volume: {format_volume_ul(config['final_volume_ul'])} per well.")
+        notes.append(
+            f"Prepare {format_volume_ul(config['final_volume_ul'] * config['well_overage_factor'])} "
+            "complete DNA/diluent/reagent mix for each populated well using the listed components."
+        )
+    notes.append(f"Deliver {format_volume_ul(config['final_volume_ul'])} to each DNA-containing well. "
+                 f"Preparation volumes include well overage x{config['well_overage_factor']:g} for pipetting loss.")
+    for mix in bulk.get("mixes", []):
+        notes.append(f"{mix['Mix']} | {mix['Total DNA_ng']:.12g} ng DNA/well | "
+                     f"{mix['Nonempty wells']} wells | Add {format_volume_ul(mix['Per-well transfection mix_uL'])} "
+                     "to each assigned DNA mix.")
     for warning in limited_examples(dedupe_messages(case_warnings or []), 3):
         notes.append(f"WARNING: {warning}")
 
+    mix_fills = {mix["Mix"]: PatternFill("solid", fgColor=BULK_MIX_COLORS[index])
+                 for index, mix in enumerate(bulk.get("mixes", []))}
     for offset, note in enumerate(notes):
         row_idx = 3 + offset
-        write_merged_note(ws, row_idx, last_col, note, note_fill, note_font)
+        fill = next((fill for label, fill in mix_fills.items() if note.startswith(label + " |")), note_fill)
+        write_merged_note(ws, row_idx, last_col, note, fill, note_font)
         ws.row_dimensions[row_idx].height = 30 if note.startswith("WARNING:") or len(note) > 120 else 18
 
     start_row = 3 + len(notes) + 1
@@ -1172,7 +1335,7 @@ def write_mix_map_workbook(
             cell.alignment = Alignment(wrap_text=True, horizontal="left", vertical="top")
             cell.border = plate_border(row_pos, col_pos, len(rows), len(cols))
             if lines:
-                cell.fill = active_fill
+                cell.fill = mix_fills.get(summary_row.get("Bulk transfectant mix"), active_fill)
                 cell.font = well_font
             else:
                 cell.fill = empty_fill
@@ -1186,11 +1349,15 @@ def write_mix_map_workbook(
     for row_pos, row_label in enumerate(rows, start=1):
         sheet_row = start_row + row_pos
         line_count = max_lines_by_row.get(row_label, 1)
-        ws.row_dimensions[sheet_row].height = min(88, max(48, 14 + 12 * min(line_count, 6)))
+        # Group labels and aliquots must not be clipped by the old six-line cap.
+        ws.row_dimensions[sheet_row].height = max(48, 14 + 12 * line_count)
 
     last_grid_row = start_row + len(rows)
     ws.freeze_panes = ws.cell(start_row + 1, start_col).coordinate
     apply_print_settings(ws, last_col, last_grid_row)
+
+    if bulk:
+        write_bulk_mixes_sheet(wb, bulk, config)
 
     details_ws = wb.create_sheet("Per-well details")
     detail_cols = [
@@ -1224,6 +1391,8 @@ def write_mix_map_workbook(
         "Transfection mix target_uL",
         "Transfection diluent_uL",
     ]
+    if bulk:
+        summary_cols.append("Bulk transfectant mix")
     write_dataframe(summary_ws, summary[summary_cols].copy())
 
     if case_warnings:

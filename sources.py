@@ -65,7 +65,7 @@ def save_settings(settings):
 
 def read_plate(data: bytes):
     try:
-        return pd.read_csv(io.BytesIO(data), encoding="utf-8-sig")
+        return pd.read_csv(io.BytesIO(data), encoding="utf-8-sig", dtype=str, keep_default_na=False)
     except (ValueError, UnicodeError, pd.errors.ParserError) as exc:
         raise MixMapError("Could not read the plate CSV", [str(exc)],
                           ["Choose a CSV with Well, Plasmid, and Mass (ng) columns, or the wide format."]) from exc

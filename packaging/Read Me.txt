@@ -1,7 +1,7 @@
-TRANSFECTION MIX MAPS 0.2
+TRANSFECTION MIX MAPS 0.3
 Apple Silicon · macOS 14 or later
 
-This readme is prepared for a future v0.2 installer. The v0.2 source update does
+This readme is prepared for a future v0.3 installer. The v0.3 source update does
 not include a newly built or published disk image.
 
 INSTALL
@@ -26,6 +26,14 @@ Select LT1 or L2000. All selected plates use the same run settings, including
 "Final volume to be delivered to each well (µL)" and
 "Transfectant ratio (µL / µg DNA)".
 
+L2000 supports up to five distinct positive total DNA masses per plate, with a
+separate bulk transfectant mix for each. Numbering starts with the largest group
+of wells; ties use the earliest physical row and then column. Every mix uses
+the same well and bulk overage factors. The workbook lists each recipe, its
+assigned wells, and its per-well aliquot. Full numbered mix labels on the plate
+map remain readable in black and white. More than five groups stops the batch.
+Preparation amounts include overage; deliver only the configured final volume.
+
 A single plate saves beside its CSV unless you choose another existing folder.
 Selecting multiple plates requires you to choose an output folder for that
 batch. Each plate creates a separate, uniquely named workbook; no workbook
@@ -34,13 +42,18 @@ folders are created.
 Only plasmids used in the layouts need usable Google Sheet concentrations.
 Missing or unusable concentrations are listed together in one error box. All
 plates are validated before saving; a validation failure creates no output.
+Well names are normalized, malformed masses and unsupported units are rejected,
+and populated rows need a well. Used stock concentrations must have one
+unambiguous column in ng/µL. CSV plasmid identifiers are preserved, and source
+labels are written as literal Excel text.
 
 Settings and credentials are saved privately at:
 ~/Library/Application Support/Transfection Mix Maps/local_state/
 
 MACOS SECURITY
-This test build has a local ad hoc signature. It is not Developer ID signed or
-notarized, so macOS may show an alert. If you trust the build and intend to open
+The current packaging workflow uses a local ad hoc signature rather than
+Developer ID signing or notarization, so macOS may show an alert for a build
+made with that workflow. If you trust the build and intend to open
 it, follow Apple's per-app instructions:
 https://support.apple.com/102445
 
@@ -48,10 +61,13 @@ After a blocked launch, macOS may offer Open Anyway in System Settings >
 Privacy & Security. Follow the Apple guidance for the alert you see.
 
 TESTING
-The v0.2 source has 99 passing automated tests focused on app function. Live
-Google authentication and real native file/folder picker interactions have not
-yet been verified end to end, and no v0.2 installer has been tested. For setup and
-verification details, use Finder's Show Package Contents on the installed app,
+The v0.3 source passes 206 automated tests, including 21 interface tests.
+Synthetic 48-well LT1 and five-mix L2000 workbook print layouts were rendered
+and inspected digitally; L2000 assignments were also verified in grayscale.
+This does not replace a physical print check. Live Google authentication and
+real native file/folder picker interactions have not yet been verified end to
+end, and no v0.3 installer has been built or tested. For setup and verification
+details, use Finder's Show Package Contents on the installed app,
 then open Contents > Resources > README.md or VALIDATION.md.
 
 Benjamin Pollak | brpollak@uscd.edu

@@ -75,13 +75,19 @@ def _write_staged_workbook(temp, plate, reagent, configs, source_label, source_t
     wb = load_workbook(temp)
     try:
         ws = wb["Run config"]
-        ws.append(["Concentrations loaded/refreshed at", source_timestamp])
-        ws.append(["Concentration snapshot SHA256", source_hash])
-        ws.append(["Plate CSV SHA256", hashlib.sha256(plate["plate_bytes"]).hexdigest()])
+        provenance = [
+            ("Concentrations loaded/refreshed at", source_timestamp),
+            ("Concentration snapshot SHA256", source_hash),
+            ("Plate CSV SHA256", hashlib.sha256(plate["plate_bytes"]).hexdigest()),
+        ]
         if "plate_path" in plate:
-            ws.append(["Plate CSV path", plate["plate_path"]])
-        ws.append(["Generated at (Pacific time)", now_iso()])
-        ws.append(["Duplicate concentration policy", "error"])
+            provenance.append(("Plate CSV path", plate["plate_path"]))
+        provenance.extend([("Generated at (Pacific time)", now_iso()),
+                           ("Duplicate concentration policy", "error")])
+        for label, value in provenance:
+            row = ws.max_row + 1
+            core.literal_cell(ws, row, 1, label)
+            core.literal_cell(ws, row, 2, value)
         wb.save(temp)
     finally:
         wb.close()

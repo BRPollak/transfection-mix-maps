@@ -50,8 +50,12 @@ def test_l2000_known_volumes():
     assert a1["DNA diluent_uL"] == pytest.approx(12.6)
     assert a1["Reagent_uL"] == pytest.approx(0.36)
     assert a1["Transfection diluent_uL"] == pytest.approx(14.64)
-    assert bulk["Bulk reagent_uL"] == pytest.approx(1.728)
-    assert bulk["Bulk total_uL"] == pytest.approx(72)
+    assert len(bulk["mixes"]) == 1
+    mix = bulk["mixes"][0]
+    assert mix["Mix"] == "Bulk transfectant mix 1"
+    assert mix["Wells"] == ["A1", "A2", "B1", "B2"]
+    assert mix["Bulk reagent_uL"] == pytest.approx(1.728)
+    assert mix["Bulk total_uL"] == pytest.approx(72)
 
 
 def test_long_and_wide_match():
