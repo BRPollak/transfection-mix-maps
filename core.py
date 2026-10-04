@@ -203,11 +203,27 @@ def values_to_dataframe(values):
         return pd.DataFrame()
 
     header_idx = None
+    # Prefer a recognizable stock header to a title or notes row. A sheet with
+    # only a Plasmid column still tells us that a name exists without a stock
+    # concentration, which is different from an absent plasmid.
     for idx, row in enumerate(values):
-        nonblank = [clean_cell(v) for v in row if clean_cell(v)]
-        if len(nonblank) >= 2:
+        name_col = find_plasmid_name_column(row)
+        conc_col = find_concentration_column(row)
+        if name_col is not None and conc_col is not None and name_col != conc_col:
             header_idx = idx
             break
+    if header_idx is None:
+        for idx, row in enumerate(values):
+            name_col = find_plasmid_name_column(row)
+            if name_col is not None and normalize_header(name_col) in {"plasmid", "plasmidname", "name"}:
+                header_idx = idx
+                break
+    if header_idx is None:
+        for idx, row in enumerate(values):
+            nonblank = [clean_cell(v) for v in row if clean_cell(v)]
+            if len(nonblank) >= 2:
+                header_idx = idx
+                break
     if header_idx is None:
         return pd.DataFrame()
 
@@ -245,111 +261,123 @@ def find_concentration_column(columns):
     return None
 
 
+def parse_concentration(value):
+    """Read finite positive stock concentrations, optionally labeled ng/uL."""
+    match = re.fullmatch(
+        r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(?:ng\s*(?:/|per)\s*[uµμ]l)?",
+        str(value).strip(), flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    result = float(match.group(1))
+    return result if math.isfinite(result) and result > 0 else None
+
+
+def scan_concentration_tables(tables):
+    """Collect usable stocks and named rows without rejecting an entire Sheet.
+
+    Entries retain unusable named rows so plate validation can distinguish an
+    absent name from an existing name whose concentration cannot be used.
+    """
+    records, entries, worksheets = [], {}, []
+    for title, values in (tables.items() if isinstance(tables, dict) else []):
+        item = {"title": title, "status": "skipped", "header_row": None,
+                "plasmid_column": None, "concentration_column": None,
+                "valid_row_count": 0, "errors": [], "warnings": []}
+        worksheets.append(item)
+        try:
+            frame = values_to_dataframe(values)
+        except (TypeError, ValueError):
+            continue
+        columns = list(frame.columns)
+        name_col = find_plasmid_name_column(columns)
+        conc_col = find_concentration_column(columns)
+        item.update(header_row=int(frame.attrs.get("header_row", 1)),
+                    plasmid_column=name_col, concentration_column=conc_col)
+        if name_col is None:
+            continue
+        mapping_issue = None
+        if conc_col is None:
+            mapping_issue = "concentration column is missing or unrecognized"
+        elif name_col == conc_col or columns.count(conc_col) != 1:
+            mapping_issue = "concentration column is ambiguous"
+        elif re.search(r"(?:[uµμ]g|mg)\s*(?:/|per)|ng\s*(?:/|per)\s*ml", str(conc_col), re.I):
+            mapping_issue = "concentration units must be ng/µL"
+        name_positions = [index for index, column in enumerate(columns) if column == name_col]
+        if len(name_positions) != 1:
+            mapping_issue = "plasmid column is ambiguous"
+        for row_index, row in frame.iterrows():
+            source_row = int(row_index) + item["header_row"] + 1
+            names = {clean_cell(row.iloc[index]) for index in name_positions}
+            for name in sorted(names - {""}):
+                raw = "" if mapping_issue else clean_cell(row.get(conc_col))
+                concentration = None if mapping_issue else parse_concentration(raw)
+                issue = mapping_issue
+                if issue is None and concentration is None:
+                    issue = ("concentration is missing" if not raw else
+                             "concentration must be a finite, positive number in ng/µL")
+                entry = {"Plasmid": name, "Concentration_ng_per_uL": concentration,
+                         "Source worksheet": title, "Source row": source_row, "issue": issue}
+                entries.setdefault(name, []).append(entry)
+                if issue is None:
+                    record = {key: value for key, value in entry.items() if key != "issue"}
+                    records.append(record)
+                    item["valid_row_count"] += 1
+        if item["valid_row_count"]:
+            item["status"] = "available"
+    return {"records": records, "entries": entries, "worksheets": worksheets}
+
+
 def load_plasmid_concentrations(tables, duplicate_policy="error", used_plasmids=None):
-    used_plasmids = {clean_cell(item) for item in (used_plasmids or []) if clean_cell(item)}
-    records = []
-    warnings = []
-    skipped_relevant_rows = []
-
-    for worksheet_title, values in tables.items():
-        df = values_to_dataframe(values)
-        if df.empty:
+    scan = scan_concentration_tables(tables)
+    entries = scan["entries"]
+    requested = sorted(entries if used_plasmids is None else
+                       {clean_cell(item) for item in used_plasmids if clean_cell(item)})
+    lookup, warnings, problems = {}, [], []
+    selected_records = []
+    folded = {}
+    for name in entries:
+        folded.setdefault(name.lower(), []).append(name)
+    for plasmid in requested:
+        candidates = [plasmid] if plasmid in entries else folded.get(plasmid.lower(), [])
+        if not candidates:
+            problems.append(f"{plasmid}: not found in the Google Sheet.")
             continue
-        name_col = find_plasmid_name_column(df.columns)
-        conc_col = find_concentration_column(df.columns)
-        if name_col is None or conc_col is None:
+        if len(candidates) > 1:
+            problems.append(f"{plasmid}: ambiguous name match ({summarize_list(candidates, 4)}); use the exact Sheet name.")
             continue
-
-        header_row = int(df.attrs.get("header_row", 1))
-        for row_number, row in df.iterrows():
-            source_row = int(row_number) + header_row + 1
-            plasmid = clean_cell(row.get(name_col))
-            raw_concentration = clean_cell(row.get(conc_col))
-            concentration = parse_float(row.get(conc_col))
-            if not plasmid and not raw_concentration:
-                continue
-            if not plasmid and raw_concentration:
-                continue
-            if plasmid and concentration is None:
-                if plasmid_is_csv_relevant(plasmid, used_plasmids):
-                    skipped_relevant_rows.append(
-                        f"{worksheet_title} row {source_row}: CSV-used plasmid '{plasmid}' has missing or unreadable concentration '{raw_concentration}'."
-                    )
-                continue
-            if concentration <= 0:
-                if plasmid_is_csv_relevant(plasmid, used_plasmids):
-                    skipped_relevant_rows.append(
-                        f"{worksheet_title} row {source_row}: CSV-used plasmid '{plasmid}' has non-positive concentration {concentration}."
-                    )
-                continue
-            records.append(
-                {
-                    "Plasmid": plasmid,
-                    "Concentration_ng_per_uL": concentration,
-                    "Source worksheet": worksheet_title,
-                    "Source row": source_row,
-                }
-            )
-
-    if skipped_relevant_rows:
-        warnings.append(
-            f"Skipped {len(skipped_relevant_rows)} concentration table concentration row(s) for plasmids used by the CSV."
-        )
-        warnings.extend(limited_examples(skipped_relevant_rows, 10))
-
-    if not records:
+        name = candidates[0]
+        valid = [entry for entry in entries[name] if entry["issue"] is None]
+        if not valid:
+            reasons = "; ".join(dedupe_messages(entry["issue"] for entry in entries[name]))
+            problems.append(f"{plasmid}: {reasons}.")
+            continue
+        concentrations = {entry["Concentration_ng_per_uL"] for entry in valid}
+        conflict = max(concentrations) - min(concentrations) > 1e-9
+        if conflict and duplicate_policy == "error":
+            values = summarize_list([f"{value:g}" for value in sorted(concentrations)], 4)
+            problems.append(f"{plasmid}: conflicting concentrations ({values} ng/µL); one concentration is required.")
+            continue
+        if conflict:
+            warnings.append(f"Resolved conflicting concentrations for '{plasmid}' using policy '{duplicate_policy}'.")
+        chosen = valid[-1] if duplicate_policy == "last" else valid[0]
+        lookup[name] = {key: value for key, value in chosen.items() if key != "issue"}
+        selected_records.extend({key: value for key, value in entry.items() if key != "issue"}
+                                for entry in valid)
+    if problems:
         raise MixMapError(
-            "No valid plasmid concentrations were found in the concentration table",
-            details=["No worksheet had usable plasmid-name and positive concentration rows for the CSV-used plasmids."],
-            fixes=[
-                "Add a plasmid-name column such as Plasmid or Plasmid Name.",
-                "Add a numeric positive concentration column such as Concentration, ng/uL, or ng per uL.",
-                "Make sure each plasmid in the CSV has a usable concentration row.",
-            ],
+            "Cannot generate mix maps — no output was made",
+            details=problems,
+            fixes=["Add or correct these plasmid concentrations in the Google Sheet, refresh it, and generate again."],
         )
-
-    lookup = {}
-    conflicts = []
-    for record in records:
-        name = record["Plasmid"]
-        concentration = record["Concentration_ng_per_uL"]
-        if name in lookup:
-            old = lookup[name]
-            if abs(old["Concentration_ng_per_uL"] - concentration) > 1e-9:
-                if plasmid_is_csv_relevant(name, used_plasmids):
-                    conflicts.append((name, old, record))
-                if duplicate_policy == "first":
-                    continue
-                if duplicate_policy == "last":
-                    lookup[name] = record
-            elif duplicate_policy == "last":
-                lookup[name] = record
-        else:
-            lookup[name] = record
-
-    if conflicts and duplicate_policy == "error":
-        details = []
-        for name, old, new in conflicts[:20]:
-            details.append(
-                f"{name}: {old['Concentration_ng_per_uL']} ng/uL ({old['Source worksheet']} row {old['Source row']}) "
-                f"vs {new['Concentration_ng_per_uL']} ng/uL ({new['Source worksheet']} row {new['Source row']})"
-            )
-        if len(conflicts) > 20:
-            details.append(f"... {len(conflicts) - 20} more duplicate conflicts not shown")
+    if not lookup:
         raise MixMapError(
-            "Conflicting duplicate plasmid concentrations found for CSV-used plasmids",
-            details=details,
-            fixes=[
-                "Keep only one concentration per CSV-used plasmid name, or make the duplicate rows agree.",
-                "Set duplicate_concentration_policy to first or last only if that is intentional.",
-            ],
+            "Cannot generate mix maps — no output was made",
+            details=["No plasmid concentrations are available for this plate."],
+            fixes=["Add the plate's plasmids and positive concentrations in ng/µL to the Google Sheet."],
         )
-    if conflicts and duplicate_policy in {"first", "last"}:
-        warnings.append(
-            f"Resolved {len(conflicts)} conflicting duplicate concentration(s) for CSV-used plasmid(s) using policy '{duplicate_policy}'."
-        )
-
-    concentration_df = pd.DataFrame(records).sort_values(["Plasmid", "Source worksheet", "Source row"])
+    concentration_df = pd.DataFrame(selected_records).drop_duplicates().sort_values(
+        ["Plasmid", "Source worksheet", "Source row"])
     return concentration_df, lookup, warnings
 
 

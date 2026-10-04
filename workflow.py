@@ -1,4 +1,4 @@
-"""Publish one complete workbook directly into an existing output folder."""
+"""Validate and publish complete plate workbooks into an existing output folder."""
 from __future__ import annotations
 
 import hashlib
@@ -38,9 +38,70 @@ def default_configs():
     return deepcopy(DEFAULT_CONFIGS)
 
 
-def generate(plate_bytes, plate_name, tables, source_label, source_timestamp,
-             reagents, configs, output_dir):
+def _prepare_plate(plate, tables, reagent, configs, run_warnings):
+    plate_bytes = plate["bytes"]
+    plate_name = Path(plate["name"]).name
+    warnings = list(run_warnings)
+    wells, long, parsing_warnings = core.standardize_plate_csv(read_plate(plate_bytes))
+    warnings.extend(parsing_warnings)
+    # Avoid accidental enormous grids caused by mistyped well coordinates.
+    rows = max(core.row_sort_key(r) for r in wells["Row"])
+    if rows > 64 or wells["Col"].max() > 96:
+        raise core.MixMapError("The plate extends beyond 64 rows or 96 columns",
+                               fixes=["Check the Well column for a mistyped plate position."])
+    used = sorted(set(long["Plasmid"].map(core.clean_cell)))
+    concentrations, lookup, concentration_warnings = core.load_plasmid_concentrations(
+        tables, duplicate_policy="error", used_plasmids=used)
+    warnings.extend(concentration_warnings)
+    matched, matching_warnings = core.match_concentrations(long, lookup)
+    warnings.extend(matching_warnings)
+    details, summary, bulk, local_warnings = core.calculate_mix(wells, matched, configs[reagent])
+    result = {"plate_name": plate_name, "plate_bytes": plate_bytes,
+              "stem": re.sub(r"[^\w.\-]+", "_", Path(plate_name).stem)[:100] or "plate",
+              "details": details, "summary": summary, "bulk": bulk,
+              "concentrations": concentrations, "wells": len(wells),
+              "entries": len(matched), "used": used,
+              "warnings": core.dedupe_messages(warnings + [f"{reagent}: {w}" for w in local_warnings])}
+    if plate.get("path") is not None:
+        result["plate_path"] = str(plate["path"])
+    return result
+
+
+def _write_staged_workbook(temp, plate, reagent, configs, source_label, source_timestamp, source_hash):
+    core.write_mix_map_workbook(
+        temp, plate["plate_name"], source_label, reagent, configs[reagent],
+        plate["details"], plate["summary"], plate["bulk"], plate["concentrations"], plate["warnings"])
+    # Keep provenance inside each workbook; no sidecar file is created.
+    wb = load_workbook(temp)
+    try:
+        ws = wb["Run config"]
+        ws.append(["Concentrations loaded/refreshed at", source_timestamp])
+        ws.append(["Concentration snapshot SHA256", source_hash])
+        ws.append(["Plate CSV SHA256", hashlib.sha256(plate["plate_bytes"]).hexdigest()])
+        if "plate_path" in plate:
+            ws.append(["Plate CSV path", plate["plate_path"]])
+        ws.append(["Generated at (Pacific time)", now_iso()])
+        ws.append(["Duplicate concentration policy", "error"])
+        wb.save(temp)
+    finally:
+        wb.close()
+    return temp.read_bytes()
+
+
+def generate_batch(plates, tables, source_label, source_timestamp, reagents, configs, output_dir):
+    """Generate one workbook per plate, publishing only after every plate is ready.
+
+    ``plates`` contains one to five dictionaries with ``name`` and ``bytes``;
+    ``path`` is optional provenance. Failed validation or staging publishes
+    nothing. If publication fails partway through, this run's new files are
+    removed while pre-existing files are preserved.
+    """
     started = time.perf_counter()
+    if not isinstance(plates, (list, tuple)) or not 1 <= len(plates) <= 5:
+        raise core.MixMapError(
+            "Choose between 1 and 5 plate CSV files",
+            fixes=["Select up to five plate layouts for each batch."],
+        )
     if len(reagents) != 1 or reagents[0] not in DEFAULT_CONFIGS:
         raise core.MixMapError(
             "Choose exactly one transfectant: LT1 or L2000",
@@ -53,61 +114,118 @@ def generate(plate_bytes, plate_name, tables, source_label, source_timestamp,
             details=[str(root)],
             fixes=["Use Save Excel files to to select a folder that already exists on your Mac."],
         )
-    warnings = core.validate_run_inputs(reagents, configs, "error")
-    wells, long, parsing_warnings = core.standardize_plate_csv(read_plate(plate_bytes))
-    warnings.extend(parsing_warnings)
-    # Avoid accidental enormous grids caused by mistyped well coordinates.
-    rows = max(core.row_sort_key(r) for r in wells["Row"])
-    if rows > 64 or wells["Col"].max() > 96:
-        raise core.MixMapError("The plate extends beyond 64 rows or 96 columns",
-                               fixes=["Check the Well column for a mistyped plate position."])
-    used = sorted(set(long["Plasmid"].map(core.clean_cell)))
-    concentrations, lookup, concentration_warnings = core.load_plasmid_concentrations(
-        tables, duplicate_policy="error")
-    warnings.extend(concentration_warnings)
-    matched, matching_warnings = core.match_concentrations(long, lookup)
-    warnings.extend(matching_warnings)
     reagent = reagents[0]
-    details, summary, bulk, local_warnings = core.calculate_mix(wells, matched, configs[reagent])
-    stem = re.sub(r"[^\w.\-]+", "_", Path(plate_name).stem)[:100] or "plate"
-    stamp = datetime.now(LOCAL_ZONE).strftime("%Y%m%d_%H%M%S")
-    all_warnings = core.dedupe_messages(warnings + [f"{reagent}: {w}" for w in local_warnings])
+    run_warnings = core.validate_run_inputs(reagents, configs, "error")
+    prepared, problems, fixes = [], [], []
+    for index, plate in enumerate(plates, start=1):
+        if (not isinstance(plate, dict) or not isinstance(plate.get("name"), str)
+                or not plate["name"].strip() or not isinstance(plate.get("bytes"), bytes)):
+            raise core.MixMapError(
+                "A plate CSV could not be read — no output was made",
+                details=[f"Plate {index} needs a filename and CSV file contents."],
+                fixes=["Choose the plate CSV files again."],
+            )
+        try:
+            prepared.append(_prepare_plate(plate, tables, reagent, configs, run_warnings))
+        except core.MixMapError as exc:
+            if len(plates) == 1:
+                raise
+            label = f"{Path(plate['name']).name} (plate {index})"
+            problems.append(f"{label}: {exc.title}")
+            problems.extend(f"{label}: {detail}" for detail in exc.details)
+            fixes.extend(exc.fixes)
+    if problems:
+        raise core.MixMapError("Cannot generate this batch — no output was made",
+                               details=problems, fixes=core.dedupe_messages(fixes))
+
     source_hash = hashlib.sha256(json.dumps(tables, sort_keys=True).encode()).hexdigest()
-    descriptor, temp_name = tempfile.mkstemp(prefix=".mixmap-", suffix=".xlsx", dir=root)
-    os.close(descriptor)
-    temp = Path(temp_name)
+    stamp = datetime.now(LOCAL_ZONE).strftime("%Y%m%d_%H%M%S")
+    staged, published, artifacts = [], [], []
+    failure = None
+    remaining_paths, rollback_warnings, cleanup_warnings = [], [], []
     try:
-        core.write_mix_map_workbook(
-            temp, Path(plate_name).name, source_label, reagent, configs[reagent],
-            details, summary, bulk, concentrations, all_warnings)
-        # Keep provenance inside the workbook; no sidecar file is created.
-        wb = load_workbook(temp)
-        ws = wb["Run config"]
-        ws.append(["Concentrations loaded/refreshed at", source_timestamp])
-        ws.append(["Concentration snapshot SHA256", source_hash])
-        ws.append(["Plate CSV SHA256", hashlib.sha256(plate_bytes).hexdigest()])
-        ws.append(["Generated at (Pacific time)", now_iso()])
-        ws.append(["Duplicate concentration policy", "error"])
-        wb.save(temp)
-        workbook_bytes = temp.read_bytes()
-        # A hard link atomically publishes the completed file and fails if the
-        # name already exists. Unlike rename/replace, it cannot overwrite a run.
-        for attempt in range(10):
-            filename = f"{stem}_{reagent}_print_mixmap_{stamp}_{uuid.uuid4().hex[:8]}.xlsx"
-            destination = root / filename
+        # Stage every complete workbook before creating any visible output file.
+        for plate in prepared:
+            descriptor, temp_name = tempfile.mkstemp(prefix=".mixmap-", suffix=".xlsx", dir=root)
+            os.close(descriptor)
+            temp = Path(temp_name)
+            staged.append(temp)
+            plate["workbook_bytes"] = _write_staged_workbook(
+                temp, plate, reagent, configs, source_label, source_timestamp, source_hash)
+        for temp, plate in zip(staged, prepared):
+            # Hard links publish complete files and never overwrite another run.
+            identity = temp.stat()
+            for attempt in range(10):
+                filename = f"{plate['stem']}_{reagent}_print_mixmap_{stamp}_{uuid.uuid4().hex[:8]}.xlsx"
+                destination = root / filename
+                try:
+                    os.link(temp, destination)
+                except FileExistsError:
+                    if attempt == 9:
+                        raise
+                else:
+                    published.append((destination, identity.st_dev, identity.st_ino))
+                    break
+            artifact = {"name": filename, "path": str(destination), "bytes": plate["workbook_bytes"],
+                        "plate_name": plate["plate_name"], "reagent": reagent,
+                        "summary": plate["summary"], "details": plate["details"], "bulk": plate["bulk"]}
+            if "plate_path" in plate:
+                artifact["plate_path"] = plate["plate_path"]
+            artifacts.append(artifact)
+    except BaseException as exc:
+        failure = exc
+        for destination, device, inode in published:
             try:
-                os.link(temp, destination)
-            except FileExistsError:
-                if attempt == 9:
-                    raise
-            else:
-                break
+                # A concurrent replacement must not be mistaken for our output.
+                identity = destination.lstat()
+                if (identity.st_dev, identity.st_ino) == (device, inode):
+                    destination.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as rollback_error:
+                # Continue rolling back other files even if this one is locked.
+                remaining_paths.append(str(destination))
+                rollback_warnings.append(f"Could not remove or verify {destination}: {rollback_error}")
     finally:
-        temp.unlink(missing_ok=True)
-    artifact = {"name": filename, "path": str(destination), "bytes": workbook_bytes,
-                "reagent": reagent, "summary": summary, "details": details, "bulk": bulk}
-    return {"artifacts": [artifact], "folder": str(root),
-            "warnings": all_warnings,
-            "wells": len(wells), "entries": len(matched), "plasmids": len(used),
+        for temp in staged:
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                cleanup_warnings.append(f"Temporary file could not be removed: {temp} ({cleanup_error}).")
+
+    if failure is not None:
+        if remaining_paths:
+            error = core.MixMapError(
+                "Batch generation failed — output files may remain",
+                details=[f"Saving failed: {failure}", *rollback_warnings, *cleanup_warnings],
+                fixes=["Check the listed output files before retrying this batch."],
+            )
+            error.outputs_created = True
+            error.remaining_paths = remaining_paths
+            error.cleanup_warnings = cleanup_warnings
+            raise error from failure
+        # Cleanup trouble must not hide the original save failure.
+        if cleanup_warnings:
+            failure.cleanup_warnings = cleanup_warnings
+            failure.add_note("\n".join(cleanup_warnings))
+        raise failure
+
+    all_warnings = []
+    for index, plate in enumerate(prepared, start=1):
+        label = f"{plate['plate_name']} (plate {index}): " if len(prepared) > 1 else ""
+        all_warnings.extend(label + warning for warning in plate["warnings"])
+    all_warnings.extend(f"Workbooks were saved. {warning}" for warning in cleanup_warnings)
+    return {"artifacts": artifacts, "folder": str(root), "plate_count": len(prepared),
+            "warnings": core.dedupe_messages(all_warnings),
+            "wells": sum(plate["wells"] for plate in prepared),
+            "entries": sum(plate["entries"] for plate in prepared),
+            "plasmids": len({name for plate in prepared for name in plate["used"]}),
             "elapsed": time.perf_counter() - started, "source": source_label,
             "source_timestamp": source_timestamp}
+
+
+def generate(plate_bytes, plate_name, tables, source_label, source_timestamp,
+             reagents, configs, output_dir):
+    """Compatibility wrapper for generating one plate workbook."""
+    return generate_batch([{"name": str(plate_name), "bytes": plate_bytes}], tables, source_label,
+                          source_timestamp, reagents, configs, output_dir)

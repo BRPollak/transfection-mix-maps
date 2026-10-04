@@ -1,17 +1,24 @@
-# Generate transfection mix maps — v0.1
+# Generate transfection mix maps — v0.2
 
 A local Streamlit app adapted from **Optimized Transfection Mix Maps.ipynb**.
-Choose a plate-layout CSV and a saved Google Sheet of DNA concentrations, then
-create an LT1 or L2000 Excel mix map with the notebook's calculation methods.
-Version **0.1** is an initial test release for **Apple Silicon Macs running macOS
-14 or later**.
+Choose up to five plate-layout CSVs and a saved Google Sheet of DNA concentrations,
+then create an LT1 or L2000 Excel mix map for each plate with the notebook's
+calculation methods. The app targets **Apple Silicon Macs running macOS 14 or later**.
 
-## Install the Mac app
+Version **0.2** is a source update with batch generation, an interactive 48-well
+preview, and concentration checks limited to the plasmids your plates use. No
+v0.2 installer has been built or published with this update. Use the
+[source instructions below](#run-from-source-or-develop) to run these changes.
+
+## Install the published Mac app (v0.1)
 
 1. Download the `.dmg` from the [v0.1 release](https://github.com/BRPollak/transfection-mix-maps/releases/tag/v0.1) and open it.
 2. Drag **Transfection Mix Maps.app** into **Applications**. You can use your own
    `~/Applications` folder instead if preferred.
 3. Eject the disk image and open the installed **Transfection Mix Maps** app.
+
+The published v0.1 installer predates the v0.2 features described below. Future
+installers will appear under [Releases](https://github.com/BRPollak/transfection-mix-maps/releases).
 
 The app includes its Python runtime and dependencies. You do not need Terminal,
 uv, or a separate Python installation. A small native app window starts the local
@@ -19,7 +26,7 @@ server and opens the interface in your browser. Keep that window open while
 working. Close the window or quit the app to stop the server; closing only the
 browser tab leaves the app running.
 
-This test build is locally signed with an **ad hoc signature**. It is not signed
+The published v0.1 test build is locally signed with an **ad hoc signature**. It is not signed
 with an Apple Developer ID and is not notarized. macOS may show a Gatekeeper
 alert. If you trust this build and intend to open it, follow Apple's per-app
 instructions in [Safely open apps on your Mac](https://support.apple.com/102445).
@@ -28,24 +35,37 @@ After the first blocked launch, Apple describes using **System Settings → Priv
 
 ## Use the app
 
-The app uses one scrollable page:
+The v0.2 app uses one scrollable page:
 
 1. In the Google connection section at the top, confirm Google sign-in, enter the
-   concentration Sheet URL, and load/check the Sheet. The page confirms whether
-   its concentration format is usable and shows when the saved data was refreshed.
-2. Press **Choose plate CSV…** to select your plate file in the native macOS file
-   chooser. Its folder automatically becomes the workbook's save location.
+   concentration Sheet URL, and load the Sheet. The page shows the available
+   concentrations and when the saved data was refreshed. Concentrations are
+   checked against the selected plate when you generate.
+2. Press **Choose plate CSVs…** to select one to five plate layouts in the native
+   macOS file chooser. Use Command-click or Shift-click to select several CSVs.
+   A single plate automatically uses its folder as the workbook's save location.
+   Selecting multiple plates clears the save location, and you must choose an
+   output folder for that batch. A 48-well preview below the selector shows rows
+   A–F and columns 1–8. Use the filename dropdown at the top right to switch
+   between selected layouts. Their filenames and paths are listed above it. Wells
+   with DNA are light purple; hover or focus a populated well to see its plasmids and
+   masses in ng. Empty wells are light grey and do not respond to interaction.
 3. Select **LT1** or **L2000**. **Reagent settings** shows settings for the selected
-   transfectant. Each generation creates one reagent workbook.
+   transfectant. All selected plates use the same run settings, with a separate
+   workbook for each plate. The volume and ratio inputs are labeled **Final volume
+   to be delivered to each well (µL)** and **Transfectant ratio (µL / µg DNA)**.
 4. To save somewhere else, press **Save Excel files to…** and select an existing
    folder in the native macOS folder chooser. The app displays its name and location.
-   This override stays selected until you choose another plate CSV.
-5. Generate the Excel mix map. The workbook is saved directly in the selected
-   folder; you can also download it from the app. The app creates no workbook
-   folders or sidecar files.
+   This choice stays selected until you choose another plate selection.
+5. Generate the Excel mix maps. Every selected plate is checked before any final
+   workbook is saved. If any plate fails validation, the batch creates no output. Each
+   workbook is saved directly in the selected folder with a unique filename;
+   you can also download each one from the app. The app creates no workbook
+   folders or sidecar files. Switching the preview dropdown does not regenerate
+   workbooks or change the selected batch.
 
 The app remembers your Google authentication, chosen Sheet, output folder, and
-reagent preferences between sessions. The plate CSV must be selected again when
+reagent preferences between sessions. The plate CSVs must be selected again when
 you return. Every workbook gets a unique filename so earlier workbooks are preserved.
 
 ## Connect Google Sheets once
@@ -64,8 +84,8 @@ file in the app's Google setup section.
    its JSON file.
 4. Select that JSON file in the app, sign in to Google with an account that can read
    your concentration Sheet, and confirm the Sheet URL.
-5. Load/check the Sheet. The app saves the connection and the selected Sheet for
-   future launches, and reports authentication and concentration-format status.
+5. Load the Sheet. The app saves the connection and the selected Sheet for future
+   launches, and displays the usable concentrations it found.
 
 The app requests only the `spreadsheets.readonly` scope and opens your Sheet by ID.
 It does not mount Drive or traverse folders. Credentials and authorization are
@@ -87,12 +107,14 @@ Google setup reference: [gspread authentication](https://docs.gspread.org/en/lat
 
 Your **Google Sheet** must include plasmid identifiers and concentrations in ng/µL.
 Use a header row with **Plasmid** and **Concentration (ng/uL)**. Multiple worksheet
-tabs are supported. The app checks the detected concentration columns and reports
-format problems before generation. Blank or unrelated tabs may be skipped with
-warnings; the confirmation shows which data was recognized. Conflicting duplicate
-concentrations anywhere in the Sheet block confirmation and generation. Resolve
-them in the Sheet, then refresh. Missing plasmids and impossible volumes also
-block generation.
+tabs are supported. Loading a Sheet does not require every tab or stock entry to
+have a concentration. Unrelated tabs, missing values, and duplicate conflicts for
+unused plasmids do not block your run. When you generate, the app checks only
+plasmids with positive DNA mass in your selected plates. Missing plasmids, missing
+or unusable concentrations, and ambiguous or conflicting concentrations for those
+plasmids are listed together in one error box. No workbook is created for a failed
+run. Batch errors also identify the plate that needs correction. Correct the
+listed entries and refresh the Sheet before trying again.
 
 Your **plate CSV** may be either format:
 
@@ -103,14 +125,17 @@ Your **plate CSV** may be either format:
 
 The file and folder choosers run on the Mac hosting the app. This app is designed
 to run locally; hosting it on another computer would open the choosers there.
+The preview displays A1–F8. If a layout includes other wells, a notice lists the
+wells outside that view; those wells remain part of the layout and calculations.
 
 ## Files and behavior
 
 - `app.py`: single-page form, Google connection status, and results.
+- `plate_preview.py`: 48-well preview with plasmid and mass tooltips.
 - `core.py`: adapted notebook parser, matching, calculations, and Excel layout.
 - `sources.py`: plate reader, saved preferences, Google authentication, and snapshots.
 - `native_dialogs.py`: native macOS plate-file and output-folder selection.
-- `workflow.py`: validation and single-reagent workbook generation.
+- `workflow.py`: validation and batch workbook generation for one transfectant.
 - `app_version.py`: the version displayed by the app and launcher.
 - `local_state/`: private settings, tokens, and cached concentrations; the installed
   app stores this under its Application Support folder rather than inside the app.
@@ -119,15 +144,18 @@ to run locally; hosting it on another computer would open the choosers there.
 L2000's final-volume default is now **25 µL**, matching LT1. The previous saved
 L2000 default of 1,500 µL is migrated to 25 µL; other custom values are preserved.
 Reagent values can still be adjusted in the main page. Duplicate concentration
-conflicts always stop the run; there is no first/last-row override. Warnings
+conflicts for plasmids used by the plate stop the run; there is no first/last-row override. Warnings
 appear in the app and workbook. Non-finite numeric inputs are rejected. A guard
 rejects coordinates beyond 64 rows or 96 columns to prevent a typo from creating
-an enormous printable grid. Errors clear the on-screen result; changing inputs
-requires regeneration.
+an enormous printable grid. Errors clear the on-screen result; changing run
+inputs requires regeneration. Choosing another plate only for preview preserves
+the current results.
 
 The selected output folder must already exist. Workbooks are published directly
-into it only after generation succeeds; incomplete temporary files are removed
-after failures. Concentration provenance is recorded inside the workbook. The
+into it only after every workbook is prepared. If a save fails, the app attempts
+to remove newly published files from that batch and reports any it cannot remove.
+Temporary-file cleanup problems are also reported. Existing workbooks are preserved.
+Concentration provenance is recorded inside each workbook. The
 app maintains its private authentication and preferences in the Application
 Support location described above.
 
@@ -138,10 +166,12 @@ authenticating or refreshing the saved concentration data.
 
 ## Testing status
 
-This is a v0.1 test release. Automated checks cover calculations, exports,
-Google connection logic, saved preferences, and simulated native file/folder
-selections. Live Google authentication and selecting real files/folders through
-the packaged app still need end-to-end testing. See [VALIDATION.md](VALIDATION.md)
+The v0.2 source has **99 passing automated tests** covering calculations, exports,
+batch validation and saving, Google connection logic, saved preferences, plate
+previews, and simulated native file/folder selections. The suite was trimmed to
+remove redundant, cosmetic, and obsolete tests while retaining functional checks.
+Live Google authentication and real native file/folder selections still need
+end-to-end testing; no v0.2 packaged app has been tested. See [VALIDATION.md](VALIDATION.md)
 for the exact verification scope and [CHANGELOG.md](CHANGELOG.md) for release notes.
 In the installed app, these documents are under **Show Package Contents →
 Contents → Resources** in Finder.
@@ -154,9 +184,9 @@ connection setup; the installer does not carry credentials between computers.
 
 ## Run from source or develop
 
-This repository contains the current v0.1 source as a fresh initial commit; earlier
-development versions are not included. The self-contained installer is available
-under [Releases](https://github.com/BRPollak/transfection-mix-maps/releases).
+This repository contains the v0.2 source. The published v0.1 installer is available
+under [Releases](https://github.com/BRPollak/transfection-mix-maps/releases); building
+and publishing a v0.2 installer is separate from this source update.
 
 Clone this repository or download its source archive. Source runs
 use `local_state/` beside the source files unless `MIXMAP_STATE_DIR` is set.

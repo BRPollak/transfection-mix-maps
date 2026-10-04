@@ -1,12 +1,10 @@
-"""Plate input, validated Google Sheets snapshots, and private local preferences."""
+"""Plate input, Google Sheets snapshots, and private local preferences."""
 from __future__ import annotations
 
 import hashlib
 import io
 import json
-import math
 import os
-import re
 import tempfile
 import uuid
 from datetime import datetime
@@ -15,9 +13,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from core import (MixMapError, clean_cell, extract_spreadsheet_id,
-                  find_concentration_column, find_plasmid_name_column, parse_float,
-                  values_to_dataframe)
+from core import MixMapError, extract_spreadsheet_id, scan_concentration_tables
 
 APP_DIR = Path(__file__).resolve().parent
 # Packaged launchers point this at writable Application Support storage; source runs
@@ -299,136 +295,21 @@ def refresh_google(value: str, credentials_path: str):
     return snapshot
 
 
-def _numeric_concentration(value):
-    """Accept a numeric cell, optionally with ng/uL units; reject text with embedded digits."""
-    raw = str(value).strip()
-    match = re.fullmatch(
-        r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(?:ng\s*(?:/|per)\s*[uµμ]l)?",
-        raw, flags=re.IGNORECASE,
-    )
-    if match is None:
-        return None
-    result = float(match.group(1))
-    # A confirmed value must also be interpreted identically by the notebook engine.
-    parsed = parse_float(value)
-    return result if math.isfinite(result) and result > 0 and parsed == result else None
-
-
 def validate_sheet_tables(tables):
-    """Validate all candidate stock tabs using the same column mapping as the engine.
+    """Inspect available stocks; only the selected plate determines run errors.
 
-    Conflicting concentrations anywhere in the Sheet block confirmation, including
-    names that differ only by case. Identical duplicates remain warnings. Source
-    names and values are retained unchanged for the calculation engine.
+    The compatibility ``valid`` flag means the snapshot may be selected. It does
+    not certify every cell or imply that all plasmids required by a plate exist.
     """
-    worksheets, preview, records = [], [], []
-    errors, warnings = [], []
-    if not isinstance(tables, dict):
-        tables = {}
-    for title, values in tables.items():
-        item = {"title": title, "status": "skipped", "header_row": None,
-                "plasmid_column": None, "concentration_column": None,
-                "valid_row_count": 0, "errors": [], "warnings": []}
-        worksheets.append(item)
-        try:
-            frame = values_to_dataframe(values)
-            columns = list(frame.columns)
-        except (TypeError, ValueError):
-            item["errors"].append("Worksheet cells could not be read as rows.")
-            item["status"] = "invalid"
-            continue
-        if not columns:
-            item["warnings"].append("Empty worksheet; skipped.")
-            continue
-        name_col = find_plasmid_name_column(columns)
-        conc_col = find_concentration_column(columns)
-        item.update(header_row=int(frame.attrs.get("header_row", 1)),
-                    plasmid_column=name_col, concentration_column=conc_col)
-        if name_col is None and conc_col is None:
-            item["warnings"].append("No plasmid/concentration columns found; this worksheet is skipped.")
-            continue
-        if name_col is None or conc_col is None or name_col == conc_col:
-            item["errors"].append("Use separate Plasmid and Concentration (ng/uL) columns in the header row.")
-            item["status"] = "invalid"
-            continue
-        if columns.count(name_col) != 1 or columns.count(conc_col) != 1:
-            item["errors"].append("The mapped plasmid/concentration column names must be unique.")
-            item["status"] = "invalid"
-            continue
-        if re.search(r"(?:[uµμ]g|mg)\s*(?:/|per)|ng\s*(?:/|per)\s*ml", conc_col, re.I):
-            item["errors"].append("Concentration units must be ng/uL. Convert the values and rename the column.")
-        for row_index, row in frame.iterrows():
-            row_number = int(row_index) + item["header_row"] + 1
-            name = clean_cell(row.get(name_col))
-            raw = clean_cell(row.get(conc_col))
-            if not name and not raw:
-                continue
-            value = _numeric_concentration(row.get(conc_col))
-            if not name:
-                item["errors"].append(f"Row {row_number}: concentration has no plasmid name.")
-            elif value is None:
-                item["errors"].append(f"Row {row_number}: '{name}' needs a finite, positive numeric concentration in ng/uL.")
-            else:
-                record = {"Plasmid": name, "Concentration (ng/uL)": value,
-                          "Worksheet": title, "Row": row_number}
-                records.append(record)
-                item["valid_row_count"] += 1
-                if len(preview) < 20:
-                    preview.append(record)
-        if not item["valid_row_count"]:
-            item["errors"].append("No valid plasmid concentration rows were found.")
-        item["status"] = "invalid" if item["errors"] else "valid"
-
-    exact, folded = {}, {}
-    by_title = {item["title"]: item for item in worksheets}
-    for record in records:
-        name = record["Plasmid"]
-        item = by_title[record["Worksheet"]]
-        previous = exact.get(name) or folded.get(name.lower())
-        if previous is not None:
-            different_case = name != previous["Plasmid"]
-            conflict = abs(record["Concentration (ng/uL)"] - previous["Concentration (ng/uL)"]) > 1e-9
-            if conflict:
-                message = (
-                    f"Conflicting concentrations: '{name}' in {record['Worksheet']} row {record['Row']} "
-                    f"is {record['Concentration (ng/uL)']:g} ng/uL, but '{previous['Plasmid']}' in "
-                    f"{previous['Worksheet']} row {previous['Row']} is "
-                    f"{previous['Concentration (ng/uL)']:g} ng/uL. "
-                    + ("The plasmid names differ only in letter case. " if different_case else "")
-                    + "Correct the Sheet so each plasmid has one concentration."
-                )
-                item["errors"].append(message)
-                if previous["Worksheet"] != record["Worksheet"]:
-                    by_title[previous["Worksheet"]]["errors"].append(message)
-            elif different_case:
-                item["warnings"].append(
-                    f"Row {record['Row']}: '{name}' differs only in letter case from "
-                    f"'{previous['Plasmid']}' in {previous['Worksheet']} row {previous['Row']}, "
-                    "with the same concentration. Use exact plasmid names in the plate CSV "
-                    "to avoid ambiguous matching."
-                )
-            else:
-                item["warnings"].append(
-                    f"Row {record['Row']}: '{name}' repeats {previous['Worksheet']} "
-                    f"row {previous['Row']} with the same concentration."
-                )
-        exact.setdefault(name, record)
-        folded.setdefault(name.lower(), record)
-    for item in worksheets:
-        errors.extend(f"{item['title']}: {message}" for message in item["errors"])
-        warnings.extend(f"{item['title']}: {message}" for message in item["warnings"])
-        if item["errors"]:
-            item["status"] = "invalid"
-        elif item["status"] == "valid" and item["warnings"]:
-            item["status"] = "warning"
-    if not records:
-        errors.append("No usable concentrations found. Add Plasmid and Concentration (ng/uL) columns with positive numbers.")
-    valid = bool(records) and not errors
-    matched_tabs = sum(ws["valid_row_count"] > 0 for ws in worksheets)
-    summary = (f"Format confirmed: {len(records)} valid concentration rows across {matched_tabs} worksheet(s)."
-               if valid else "Sheet format needs attention before you can generate mix maps.")
-    if valid and warnings:
-        summary += " Review the warnings below."
-    return {"valid": valid, "summary": summary, "worksheet_count": len(worksheets),
-            "valid_row_count": len(records), "errors": errors, "warnings": warnings,
+    scan = scan_concentration_tables(tables)
+    worksheets, records = scan["worksheets"], scan["records"]
+    matched_tabs = sum(item["valid_row_count"] > 0 for item in worksheets)
+    preview = [{"Plasmid": record["Plasmid"],
+                "Concentration (ng/uL)": record["Concentration_ng_per_uL"],
+                "Worksheet": record["Source worksheet"], "Row": record["Source row"]}
+               for record in records[:20]]
+    summary = (f"Sheet loaded: {len(records)} usable concentration rows across {matched_tabs} worksheet(s). "
+               "Only plasmids in your plate layout are checked when generating.")
+    return {"valid": True, "summary": summary, "worksheet_count": len(worksheets),
+            "valid_row_count": len(records), "errors": [], "warnings": [],
             "worksheets": worksheets, "preview": preview}

@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -11,20 +12,21 @@ import pandas as pd
 import streamlit as st
 
 from app_version import VERSION
-from core import MixMapError
-from native_dialogs import FolderPickerError, PlatePickerError, choose_output_folder, choose_plate_file
+from core import MixMapError, standardize_plate_csv
+from native_dialogs import FolderPickerError, PlatePickerError, choose_output_folder, choose_plate_files
+from plate_preview import plate_preview_html
 from sources import (APP_DIR, LOCAL_ZONE, STATE_DIR, authenticate_google, auth_status,
                      load_settings, load_snapshot, private_json, refresh_google,
-                     save_settings, sheet_id)
-from workflow import default_configs, generate
+                     read_plate, save_settings, sheet_id)
+from workflow import default_configs, generate_batch
 
 st.set_page_config(page_title=f"Generate transfection mix maps · v{VERSION}", page_icon="🧪", layout="wide",
                    initial_sidebar_state="collapsed")
 
 UI_VERSION = 3
 FIELDS = {
-    "final_volume_ul": ("Final volume per well (µL)", "Before the well overage factor is applied."),
-    "dna_to_reagent_ratio_ul_per_ug": ("Reagent ratio (µL / µg DNA)", "Reagent volume per microgram of DNA."),
+    "final_volume_ul": ("Final volume to be delivered to each well (µL)", "Before the well overage factor is applied."),
+    "dna_to_reagent_ratio_ul_per_ug": ("Transfectant ratio (µL / µg DNA)", "Transfectant volume per microgram of DNA."),
     "well_overage_factor": ("Well overage factor", "1.3 prepares 30% extra for each well."),
     "bulk_overage_factor": ("Bulk overage factor", "Additional overage for the L2000 bulk reagent tube."),
 }
@@ -32,13 +34,22 @@ PREF_KEYS = ["reagent_choice", "output_folder", "sheet_url", "credentials_path"]
 PREF_KEYS += [f"{r}_{field}" for r in ("LT1", "L2000") for field in FIELDS]
 
 
-def show_error(exc):
-    st.error(exc.title if isinstance(exc, MixMapError) else str(exc))
+def show_error(exc, *, no_output=False):
+    # Keep the explanation together in one compact box. Escape source text so
+    # plasmid names and worksheet names cannot become Markdown formatting.
+    def plain(value):
+        return re.sub(r"([\\`*_{}\[\]()<>#+.!|~-])", r"\\\1", str(value))
+
+    title = exc.title if isinstance(exc, MixMapError) else str(exc)
+    parts = [f"**{plain(title)}**"]
     if isinstance(exc, MixMapError):
-        for detail in exc.details:
-            st.text(detail)
-        for fix in exc.fixes:
-            st.caption(fix)
+        if exc.details:
+            parts.append("\n".join(f"- {plain(detail)}" for detail in exc.details))
+        if exc.fixes:
+            parts.append(" ".join(plain(fix) for fix in exc.fixes))
+    if no_output and not getattr(exc, "outputs_created", False):
+        parts.append("No output was created.")
+    st.error("\n\n".join(parts))
 
 
 def initialize():
@@ -81,6 +92,13 @@ def initialize():
             st.session_state[key] = float(value)
     if migrated:
         persist()
+    # Preserve an already selected plate when this local preview hot-reloads.
+    if "plates" not in st.session_state and st.session_state.get("plate_bytes"):
+        st.session_state.plates = [{"path": st.session_state.plate_path,
+                                    "name": st.session_state.plate_name,
+                                    "bytes": st.session_state.plate_bytes}]
+    for key in ("plate_path", "plate_name", "plate_bytes"):
+        st.session_state.pop(key, None)
 
 
 def preferences():
@@ -187,7 +205,7 @@ def google_section():
         with confirm_col:
             if st.button("Confirm Sheet & refresh concentrations", type="primary", disabled=not (auth_ready and sid), width="stretch"):
                 try:
-                    with st.spinner("Opening the Sheet and checking its columns and concentrations…"):
+                    with st.spinner("Opening the Sheet and loading concentrations…"):
                         snapshot = refresh_google(url, st.session_state.credentials_path)
                     st.session_state.pop("sheet_issue", None)
                     persist()
@@ -206,15 +224,9 @@ def google_section():
             fetched = datetime.fromisoformat(snapshot["fetched_at"])
             stamp = fetched.astimezone(LOCAL_ZONE).strftime("%b %d, %Y at %I:%M %p %Z")
             st.caption(f"Last confirmed with Google: {stamp}. Generate uses these saved concentrations; refresh after changing your Sheet.")
-            if report.get("valid"):
-                st.success(f"Sheet format confirmed · {report.get('valid_row_count', 0)} usable concentration rows")
-            else:
-                st.error("Sheet format needs attention before you can generate a mix map.")
-            for error in report.get("errors", []):
-                st.error(str(error))
-            for warning in report.get("warnings", []):
-                st.warning(str(warning))
-            with st.expander("See Sheet format check and concentrations"):
+            st.success(f"Sheet loaded · {report.get('valid_row_count', 0)} usable concentration rows")
+            st.caption("Only plasmids used in your plate layout need a usable concentration. They are checked when you generate.")
+            with st.expander("See loaded concentrations"):
                 checks = [{"Worksheet": r["title"], "Status": r["status"],
                            "Plasmid column": r.get("plasmid_column") or "—",
                            "Concentration column": r.get("concentration_column") or "—",
@@ -229,16 +241,18 @@ def google_section():
                 st.warning("Your saved concentrations are more than 24 hours old. Refresh if the Sheet has changed.")
                 stale_ok = st.checkbox("Use these saved concentrations for this run", value=False,
                                        key="use_saved_" + hashlib.sha256((sid + snapshot["fetched_at"]).encode()).hexdigest()[:12])
-            ready = auth_ready and report.get("valid", False) and stale_ok and not issue
+            ready = auth_ready and stale_ok and not issue
         else:
-            st.caption("Sheet format: not checked yet. Confirm the Sheet to check column names and positive numeric concentrations.")
+            st.caption("Confirm the Sheet to load its saved concentrations.")
             ready = False
     return snapshot, ready
 
 
 def show_result(result):
-    artifact = result["artifacts"][0]
-    st.success(f"{artifact['reagent']} workbook saved in {result['elapsed']:.2f} seconds.")
+    artifacts = result["artifacts"]
+    count = len(artifacts)
+    label = "workbook" if count == 1 else "workbooks"
+    st.success(f"{count} {artifacts[0]['reagent']} {label} saved in {result['elapsed']:.2f} seconds.")
     a, b, c = st.columns(3)
     a.metric("Wells", result["wells"])
     b.metric("Plasmid entries", result["entries"])
@@ -248,16 +262,100 @@ def show_result(result):
         with st.expander(f"Review {len(result['warnings'])} warning(s)", expanded=True):
             for warning in result["warnings"]:
                 st.warning(warning)
-    st.download_button(f"Download {artifact['reagent']} workbook", artifact["bytes"], file_name=artifact["name"],
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", on_click="ignore")
-    with st.expander("Preview volumes and plate map", expanded=True):
-        summary = artifact["summary"]
-        st.dataframe(summary[["Well", "Total DNA_ng", "Total working DNA_uL", "DNA diluent_uL", "Reagent_uL"]],
-                     hide_index=True, width="stretch")
-        st.dataframe(summary.pivot(index="Row", columns="Col", values="Mix").fillna(""), width="stretch")
-        if artifact["bulk"]:
-            bulk = artifact["bulk"]
-            st.write(f"**Bulk reagent tube:** {bulk['Bulk reagent_uL']:.3f} µL reagent + {bulk['Bulk diluent_uL']:.3f} µL diluent = {bulk['Bulk total_uL']:.3f} µL total.")
+    for index, artifact in enumerate(artifacts, 1):
+        title = (f"{index} · {artifact['plate_name']}" if count > 1 else
+                 "Preview volumes and plate map")
+        with st.expander(title, expanded=count == 1):
+            if artifact.get("plate_path"):
+                st.caption(f"Plate layout: {artifact['plate_path']}")
+            st.caption(f"Workbook: {artifact['name']}")
+            st.download_button(f"Download {artifact['reagent']} workbook", artifact["bytes"], file_name=artifact["name"],
+                               key="download_" + artifact["name"],
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", on_click="ignore")
+            summary = artifact["summary"]
+            st.dataframe(summary[["Well", "Total DNA_ng", "Total working DNA_uL", "DNA diluent_uL", "Reagent_uL"]],
+                         hide_index=True, width="stretch")
+            st.dataframe(summary.pivot(index="Row", columns="Col", values="Mix").fillna(""), width="stretch")
+            if artifact["bulk"]:
+                bulk = artifact["bulk"]
+                st.write(f"**Bulk reagent tube:** {bulk['Bulk reagent_uL']:.3f} µL reagent + {bulk['Bulk diluent_uL']:.3f} µL diluent = {bulk['Bulk total_uL']:.3f} µL total.")
+
+
+def plate_section():
+    st.subheader("2 · Plate layout")
+    if st.button("Choose plate CSVs…", icon="📄"):
+        try:
+            initial_folder = st.session_state.output_folder or str(Path.home())
+            selected = choose_plate_files(initial_folder)
+            if selected:
+                if len(selected) > 5:
+                    raise ValueError("Choose up to 5 plate layouts at once.")
+                plates = []
+                for selected_path in selected:
+                    plate_path = Path(selected_path)
+                    if plate_path.stat().st_size > 20 * 1024 * 1024:
+                        raise ValueError(f"{plate_path.name}: choose a plate CSV smaller than 20 MB.")
+                    plate_bytes = plate_path.read_bytes()
+                    if not plate_bytes:
+                        raise ValueError(f"{plate_path.name}: this plate CSV is empty.")
+                    plates.append({"path": str(plate_path), "name": plate_path.name, "bytes": plate_bytes})
+                st.session_state.plates = plates
+                st.session_state.preview_plate = plates[0]["path"]
+                # Each new multi-selection requires an explicit output-folder
+                # choice, even if a previous run had a saved folder.
+                st.session_state.output_folder = str(Path(plates[0]["path"]).parent) if len(plates) == 1 else ""
+                st.session_state.pop("result", None)
+                persist()
+        except (PlatePickerError, OSError, ValueError) as exc:
+            for key in ("plates", "preview_plate", "result"):
+                st.session_state.pop(key, None)
+            show_error(exc)
+
+    plates = st.session_state.get("plates", [])
+    if len(plates) == 1:
+        st.markdown(f"**Selected plate:** {plates[0]['name']}")
+        st.caption(plates[0]["path"])
+    elif plates:
+        for index, plate in enumerate(plates, 1):
+            st.text(f"{index}. {plate['name']}")
+            st.caption(plate["path"])
+    else:
+        st.caption("Choose up to 5 CSVs on your Mac. A single plate uses its folder for output; multiple plates require you to choose a save folder.")
+    st.caption("Use Command-click or Shift-click to select multiple CSVs. All selected plates use the run settings below.")
+    st.caption("Wide format: Well, Plasmid1, Mass1 (ng), … · Long format: Well, Plasmid, Mass (ng).")
+
+    previews, errors = {}, []
+    for plate in plates:
+        try:
+            wells, entries, _ = standardize_plate_csv(read_plate(plate["bytes"]))
+            previews[plate["path"]] = (wells, entries)
+        except (MixMapError, ValueError) as exc:
+            details = " ".join(exc.details) if isinstance(exc, MixMapError) else ""
+            errors.append(f"{plate['name']}: {exc}. {details}".strip())
+    if errors:
+        show_error(MixMapError("Correct the selected plate layouts", details=errors,
+                               fixes=["Choose the corrected CSVs again before generating."]), no_output=True)
+
+    with st.container(border=True, width=660, key="plate_preview_card"):
+        heading, selector = st.columns([1, 1], vertical_alignment="center")
+        with heading:
+            st.markdown("**48-well plate preview**")
+        with selector:
+            if len(plates) > 1:
+                options = {plate["path"]: plate["name"] for plate in plates}
+                names = [plate["name"] for plate in plates]
+                def plate_label(path):
+                    name = options[path]
+                    return f"{name} — {Path(path).parent}" if names.count(name) > 1 else name
+                if st.session_state.get("preview_plate") not in options:
+                    st.session_state.preview_plate = plates[0]["path"]
+                preview_path = st.selectbox("Plate to preview", list(options), format_func=plate_label,
+                                            key="preview_plate", label_visibility="collapsed")
+            else:
+                preview_path = plates[0]["path"] if plates else None
+        wells, entries = previews.get(preview_path, (None, None))
+        st.html(plate_preview_html(entries, wells, embedded=True))
+    return plates, bool(plates) and not errors
 
 
 def main():
@@ -270,41 +368,13 @@ def main():
     </style><div class="eyebrow">PLATE PREPARATION · LOCAL WORKSPACE</div>""", unsafe_allow_html=True)
     st.title("Generate transfection mix maps")
     st.caption(f"v{VERSION}")
-    st.write("Connect your concentrations, choose a plate, and save an Excel map ready for the bench.")
+    st.write("Connect your concentrations, choose up to five plates, and save Excel maps ready for the bench.")
     if "settings_error" in st.session_state:
         show_error(st.session_state.pop("settings_error"))
     snapshot, sheet_ready = google_section()
 
-    st.subheader("2 · Plate layout")
-    if st.button("Choose plate CSV…", icon="📄"):
-        try:
-            initial_folder = st.session_state.output_folder or str(Path.home())
-            selected = choose_plate_file(initial_folder)
-            if selected:
-                plate_path = Path(selected)
-                if plate_path.stat().st_size > 20 * 1024 * 1024:
-                    raise ValueError("Choose a plate CSV smaller than 20 MB.")
-                plate_bytes = plate_path.read_bytes()
-                if not plate_bytes:
-                    raise ValueError("This plate CSV is empty. Choose a file with a plate layout.")
-                st.session_state.plate_path = str(plate_path)
-                st.session_state.plate_bytes = plate_bytes
-                st.session_state.plate_name = plate_path.name
-                st.session_state.output_folder = str(plate_path.parent)
-                st.session_state.pop("result", None)
-                persist()
-        except (PlatePickerError, OSError, ValueError) as exc:
-            for key in ("plate_path", "plate_bytes", "plate_name", "result"):
-                st.session_state.pop(key, None)
-            st.error(str(exc))
-    if st.session_state.get("plate_path"):
-        st.markdown(f"**Selected plate:** {st.session_state.plate_name}")
-        st.caption(st.session_state.plate_path)
-    else:
-        st.caption("Choose a CSV on your Mac. Its folder will also be used to save your workbook.")
-    st.caption("Wide format: Well, Plasmid1, Mass1 (ng), … · Long format: Well, Plasmid, Mass (ng).")
-    plate_bytes = st.session_state.get("plate_bytes")
-    plate_name = st.session_state.get("plate_name")
+    plates, plate_ready = plate_section()
+    multiple_plates = len(plates) > 1
 
     st.subheader("3 · Reagent settings")
     st.radio("Transfectant", ["LT1", "L2000"], horizontal=True, key="reagent_choice", on_change=persist)
@@ -319,7 +389,7 @@ def main():
     st.caption("L2000 prepares separate DNA and bulk reagent tubes." if reagent == "L2000" else "LT1 prepares one complete mix per well.")
     st.button(f"Restore {reagent} defaults", on_click=restore_selected_reagent)
 
-    st.subheader("4 · Save your workbook")
+    st.subheader("4 · Save your workbooks" if multiple_plates else "4 · Save your workbook")
     folder_col, name_col = st.columns([1, 2])
     with folder_col:
         if st.button("Save Excel files to…", icon="📁", width="stretch"):
@@ -336,8 +406,10 @@ def main():
             st.markdown(f"**Selected folder:** {destination.name or str(destination)}")
             st.caption(str(destination))
         else:
-            st.caption("Select a plate CSV or choose an existing folder.")
-    st.caption("Excel files are saved directly to the selected folder. You can change it above.")
+            st.caption("Choose an output folder for all selected plates." if multiple_plates else
+                       "Select a plate CSV or choose an existing folder.")
+    st.caption("Each plate creates a separate workbook with a unique filename in the selected folder." if multiple_plates else
+               "Excel files are saved directly to the selected folder. You can change it above.")
     if destination and not destination.is_dir():
         st.error("The selected folder is no longer available. Choose an existing folder.")
     if "save_error" in st.session_state:
@@ -348,29 +420,32 @@ def main():
         for field in FIELDS:
             configs[r][field] = st.session_state[f"{r}_{field}"]
     preferences()  # Retain hidden reagent settings when Streamlit removes their widgets.
-    ready = bool(plate_bytes and sheet_ready and destination and destination.is_dir())
-    fingerprint = hashlib.sha256((plate_bytes or b"") + json.dumps({
-        "name": plate_name, "snapshot": snapshot, "reagent": reagent,
+    ready = bool(plate_ready and sheet_ready and destination and destination.is_dir())
+    fingerprint = hashlib.sha256(json.dumps({
+        "plates": [{"path": p["path"], "name": p["name"], "hash": hashlib.sha256(p["bytes"]).hexdigest()} for p in plates],
+        "snapshot": snapshot, "reagent": reagent,
         "config": configs[reagent],
         "output": str(destination), "sheet_ready": sheet_ready,
     }, sort_keys=True).encode()).hexdigest()
     if st.session_state.get("result") and st.session_state.get("result_fingerprint") != fingerprint:
         st.session_state.pop("result", None)
         st.info("Inputs changed. Generate again to preview results for these settings.")
-    if st.button(f"Generate {reagent} Excel mix map", type="primary", disabled=not ready, width="stretch"):
+    generate_label = (f"Generate {len(plates)} {reagent} Excel mix maps" if multiple_plates else
+                      f"Generate {reagent} Excel mix map")
+    if st.button(generate_label, type="primary", disabled=not ready, width="stretch"):
         st.session_state.pop("result", None)
         try:
-            with st.spinner("Checking plate inputs and building your workbook…"):
-                result = generate(plate_bytes, plate_name, snapshot["tables"],
-                                  f"Google Sheet: {snapshot['sheet_id']}", snapshot["fetched_at"],
-                                  [reagent], configs, str(destination))
+            with st.spinner("Checking all plate inputs and building your workbooks…"):
+                result = generate_batch(plates, snapshot["tables"],
+                                        f"Google Sheet: {snapshot['sheet_id']}", snapshot["fetched_at"],
+                                        [reagent], configs, str(destination))
             st.session_state.result = result
             st.session_state.result_fingerprint = fingerprint
             persist()
         except Exception as exc:
-            show_error(exc)
+            show_error(exc, no_output=True)
     if not ready:
-        st.caption("Confirm Google sign-in and a valid Sheet, then choose a plate CSV to generate your workbook.")
+        st.caption("Confirm Google sign-in, load your Sheet, choose valid plate CSVs, and select an output folder to generate.")
     if st.session_state.get("result"):
         show_result(st.session_state.result)
     st.divider()

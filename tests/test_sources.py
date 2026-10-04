@@ -11,7 +11,7 @@ import pytest
 from google.oauth2.credentials import Credentials
 
 import sources
-from core import MixMapError, load_plasmid_concentrations
+from core import MixMapError
 
 
 @pytest.fixture(autouse=True)
@@ -195,11 +195,13 @@ def test_revoked_refresh_requires_sign_in(client_file, monkeypatch):
     assert sources.auth_status(path)["state"] == "needs_sign_in"
 
 
-def test_validation_reports_columns_rows_preview_and_ignored_tabs():
+def test_sheet_scan_reports_columns_rows_preview_and_ignored_tabs():
     report = sources.validate_sheet_tables({
-        "Stocks": [["Lab stocks"], [], ["Plasmid name", "ng/uL"], ["A", "100"], ["B", "50 ng/µL"]],
+        "Stocks": [["Plasmid concentrations"], ["Date", "Oct 4"], ["Plasmid name", "ng/uL"],
+                   ["A", "100"], ["B", "50 ng/µL"], ["Bad", "text100"], ["Blank", ""], ["", "50"]],
         "Notes": [["Date", "Operator"], ["Oct 4", "Lab"]],
         "Empty": [],
+        "Partial": [["Plasmid", "Location"], ["B", "Freezer"]],
     })
     assert report["valid"]
     assert report["valid_row_count"] == 2
@@ -208,93 +210,20 @@ def test_validation_reports_columns_rows_preview_and_ignored_tabs():
     assert stock["plasmid_column"] == "Plasmid name"
     assert stock["concentration_column"] == "ng/uL"
     assert report["preview"][0]["Row"] == 4
-    assert report["warnings"]
-    assert len(report["worksheets"]) == 3
-
-
-@pytest.mark.parametrize("bad", ["", "nan", "inf", "1e999", "0", "-2", "text100", "100-ish", "50 ng per uL"])
-def test_validation_does_not_certify_bad_numeric_rows(bad):
-    report = sources.validate_sheet_tables({
-        "Stocks": [["Plasmid", "Concentration"], ["Good", "50"], ["Bad", bad]]
-    })
-    assert not report["valid"]
-    assert report["valid_row_count"] == 1
-    assert any("Row 3" in item for item in report["errors"])
-
-
-def test_validation_rejects_orphan_concentration_and_partial_headers():
-    report = sources.validate_sheet_tables({
-        "Stocks": [["Plasmid", "Concentration"], ["A", "50"], ["", "50"]],
-        "Missing concentration": [["Plasmid", "Location"], ["B", "Freezer"]],
-    })
-    assert not report["valid"]
-    assert any("no plasmid name" in item for item in report["errors"])
-    assert any("separate Plasmid" in item for item in report["errors"])
-
-
-def test_conflicting_duplicates_block_sheet_confirmation_even_if_unused_by_plate():
-    tables = {
-        "Stocks": [["Plasmid", "Concentration"], ["Used", "25"], ["Unused", "50"], ["Unused", "100"]]
-    }
-    report = sources.validate_sheet_tables(tables)
-    assert not report["valid"]
-    assert report["worksheets"][0]["status"] == "invalid"
-    assert any("Conflicting concentrations" in item for item in report["errors"])
-    assert any("row 3" in item and "row 4" in item for item in report["errors"])
-    # The sheet-level gate is intentionally stricter than the original engine;
-    # the engine's arithmetic and matching behavior remain unchanged.
-    _, lookup, _ = load_plasmid_concentrations(tables, used_plasmids=["Used"])
-    assert lookup["Used"]["Concentration_ng_per_uL"] == 25
-
-
-@pytest.mark.parametrize("second_name", ["A", "a"])
-def test_cross_worksheet_numeric_conflicts_mark_both_worksheets_invalid(second_name):
-    tables = {
-        "Stock 1": [["Plasmid", "Concentration"], ["A", "50"]],
-        "Stock 2": [["Plasmid", "Concentration"], [second_name, "100"]],
-    }
-    report = sources.validate_sheet_tables(tables)
-    assert not report["valid"]
-    assert all(item["status"] == "invalid" for item in report["worksheets"])
-    assert all(item["errors"] for item in report["worksheets"])
-    if second_name == "a":
-        assert any("letter case" in item for item in report["errors"])
-        # Validation neither merges case-distinct names nor rewrites concentrations.
-        _, lookup, _ = load_plasmid_concentrations(tables)
-        assert lookup["A"]["Concentration_ng_per_uL"] == 50
-        assert lookup["a"]["Concentration_ng_per_uL"] == 100
-
-
-@pytest.mark.parametrize("second_name", ["A", "a"])
-def test_identical_concentrations_remain_nonblocking_duplicate_warnings(second_name):
-    tables = {
-        "Stock 1": [["Plasmid", "Concentration"], ["A", "50"]],
-        "Stock 2": [["Plasmid", "Concentration"], [second_name, "50"]],
-    }
-    report = sources.validate_sheet_tables(tables)
-    assert report["valid"]
     assert not report["errors"]
-    assert report["worksheets"][1]["status"] == "warning"
-    assert any("same concentration" in item for item in report["warnings"])
-    if second_name == "a":
-        assert any("letter case" in item for item in report["warnings"])
+    assert not report["warnings"]
+    assert [row["Plasmid"] for row in report["preview"]] == ["A", "B"]
 
 
-@pytest.mark.parametrize("tables", [
-    {}, {"Stock": []}, {"Stock": [["Plasmid", "Concentration"]]},
-    {"Stock": [["Thing", "Amount"], ["A", "20"]]},
-    {"Stock": [["Plasmid", "Concentration (ug/uL)"], ["A", "20"]]},
-    {"Stock": [["Plasmid", "Concentration", "Concentration"], ["A", "20", "30"]]},
-])
-def test_no_valid_format_is_not_confirmed(tables):
-    report = sources.validate_sheet_tables(tables)
-    assert not report["valid"]
-    assert report["errors"]
+def test_empty_sheet_scan_is_nonblocking():
+    report = sources.validate_sheet_tables({})
+    assert report["valid"]
+    assert report["valid_row_count"] == 0
+    assert not report["errors"]
+    assert not report["warnings"]
 
 
 def test_saved_paths_reject_unexpected_oauth_endpoints(client_file):
-    from pathlib import Path
-
     path = Path(client_file())
     data = json.loads(path.read_text())
     data["installed"]["token_uri"] = "https://untrusted.invalid/token"

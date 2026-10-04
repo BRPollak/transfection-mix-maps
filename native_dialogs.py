@@ -5,6 +5,7 @@ response to a button click, never while rendering the page or during tests.
 """
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -74,6 +75,38 @@ on run argv
     set modalResponse to filePanel's runModal()
     if modalResponse is not 1 then return ""
     return (filePanel's |URL|()'s |path|()) as text
+end run
+'''
+
+
+_CHOOSE_PLATES_SCRIPT = '''
+use framework "Foundation"
+use framework "AppKit"
+use framework "UniformTypeIdentifiers"
+
+on run argv
+    set dialogApp to current application's NSApplication's sharedApplication()
+    dialogApp's setActivationPolicy:1
+    dialogApp's activateIgnoringOtherApps:true
+    set filePanel to current application's NSOpenPanel's openPanel()
+    filePanel's setTitle:"Choose plate CSVs"
+    filePanel's setMessage:"Choose up to 5 existing plate CSV files."
+    filePanel's setPrompt:"Choose CSVs"
+    filePanel's setCanChooseDirectories:false
+    filePanel's setCanChooseFiles:true
+    filePanel's setAllowsMultipleSelection:true
+    filePanel's setCanCreateDirectories:false
+    set csvType to current application's UTType's typeWithFilenameExtension:"csv"
+    filePanel's setAllowedContentTypes:{csvType}
+    filePanel's setAllowsOtherFileTypes:false
+    filePanel's setDirectoryURL:(current application's NSURL's fileURLWithPath:(item 1 of argv))
+    set modalResponse to filePanel's runModal()
+    if modalResponse is not 1 then return ""
+    set selectedURLs to filePanel's URLs()
+    set selectedPaths to selectedURLs's valueForKey:"path"
+    set jsonData to current application's NSJSONSerialization's dataWithJSONObject:selectedPaths options:0 |error|:(missing value)
+    if jsonData is missing value then error "Could not read the selected CSV paths."
+    return (current application's NSString's alloc()'s initWithData:jsonData encoding:(current application's NSUTF8StringEncoding)) as text
 end run
 '''
 
@@ -184,3 +217,60 @@ def choose_plate_file(current_folder: str) -> str | None:
             "Could not access the selected plate CSV. Choose an existing CSV "
             "file on your Mac and try again."
         ) from exc
+
+
+def choose_plate_files(current_folder: str) -> list[str] | None:
+    """Choose up to five readable plate CSVs, preserving order and cancellation.
+
+    JSON keeps each absolute path intact, including embedded newlines. Repeated
+    paths (including symlink aliases) count only once. A bad selection rejects
+    the entire batch; no file or directory is changed by this chooser.
+    """
+    selected = _run_picker(_CHOOSE_PLATES_SCRIPT, current_folder,
+                           PlatePickerError, "plate file chooser", "Choose plate CSVs")
+    if selected is None:
+        return None
+    try:
+        paths = json.loads(selected)
+    except (TypeError, ValueError) as exc:
+        raise PlatePickerError(
+            "Could not read the selected plate paths. Click 'Choose plate CSVs' "
+            "again and choose up to 5 CSV files."
+        ) from exc
+    if not isinstance(paths, list) or any(not isinstance(path, str) for path in paths):
+        raise PlatePickerError(
+            "Could not read the selected plate paths. Click 'Choose plate CSVs' "
+            "again and choose up to 5 CSV files."
+        )
+    if not paths:
+        return None
+
+    unique_paths, seen = [], set()
+    for path in paths:
+        try:
+            plate = Path(path)
+            if not plate.is_absolute() or not plate.is_file() or plate.suffix.lower() != ".csv":
+                raise PlatePickerError(
+                    "The selected plates must all be existing CSV files. Click "
+                    "'Choose plate CSVs' again and select up to 5 .csv files. "
+                    f"Invalid selection: {path!r}."
+                )
+            identity = plate.resolve(strict=True)
+            if identity in seen:
+                continue
+            # Check readability here so a partially usable batch never escapes
+            # the dialog validation. The caller reads and validates CSV content.
+            with plate.open("rb") as stream:
+                stream.read(1)
+            seen.add(identity)
+            unique_paths.append(str(plate))
+        except (OSError, RuntimeError, ValueError) as exc:
+            if isinstance(exc, PlatePickerError):
+                raise
+            raise PlatePickerError(
+                f"Could not access the selected plate CSV {path!r}. Choose "
+                "readable, existing CSV files on your Mac and try again."
+            ) from exc
+    if len(unique_paths) > 5:
+        raise PlatePickerError("Choose no more than 5 plate CSV files at once.")
+    return unique_paths
