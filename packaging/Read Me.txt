@@ -1,0 +1,39 @@
+TRANSFECTION MIX MAPS 0.1
+Initial test release · Apple Silicon · macOS 14 or later
+
+INSTALL
+1. Drag Transfection Mix Maps.app into Applications.
+   Your own ~/Applications folder is also supported.
+2. Eject this disk image.
+3. Open the installed Transfection Mix Maps app.
+
+Python and dependencies are included. No Terminal, uv, or separate Python setup
+is needed. The small app window opens the interface in your browser. Keep that
+window open while working. Close it or quit the app to stop the local server.
+
+FIRST USE
+Use the top Google section to set up a Desktop OAuth client, sign in, and confirm
+your concentration Sheet. Colab sign-in does not transfer to this app. No Google
+credentials are included. Choose your plate CSV, select LT1 or L2000, and generate
+the workbook. It saves beside the selected CSV unless you choose another existing
+folder. Each workbook has a unique name; no workbook folders are created.
+
+Settings and credentials are saved privately at:
+~/Library/Application Support/Transfection Mix Maps/local_state/
+
+MACOS SECURITY
+This test build has a local ad hoc signature. It is not Developer ID signed or
+notarized, so macOS may show an alert. If you trust the build and intend to open
+it, follow Apple's per-app instructions:
+https://support.apple.com/102445
+
+After a blocked launch, macOS may offer Open Anyway in System Settings >
+Privacy & Security. Follow the Apple guidance for the alert you see.
+
+TESTING
+Version 0.1 is for testing. Live Google authentication and real native file/folder
+picker interactions have not yet been verified end to end. For setup and
+verification details, use Finder's Show Package Contents on the installed app,
+then open Contents > Resources > README.md or VALIDATION.md.
+
+Benjamin Pollak | brpollak@uscd.edu

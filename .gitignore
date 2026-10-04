@@ -1,0 +1,33 @@
+.venv/
+.uv-cache/
+.python/
+local_state/
+generated/
+__pycache__/
+.pytest_cache/
+.DS_Store
+
+# Private configuration and OAuth files
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+client_secret*.json
+client_credentials.json
+authorized_user*.json
+credentials*.json
+token*.json
+*.pem
+*.key
+
+# Build products and generated workbooks belong outside source control
+*.py[cod]
+*.log
+build/
+dist/
+swift-module-cache/
+*.app/
+*.dmg
+*.dmg.sha256
+*.zip
+*.xlsx
