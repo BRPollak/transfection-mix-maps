@@ -1,5 +1,8 @@
-TRANSFECTION MIX MAPS 0.1
-Initial test release · Apple Silicon · macOS 14 or later
+TRANSFECTION MIX MAPS 0.2
+Apple Silicon · macOS 14 or later
+
+This readme is prepared for a future v0.2 installer. The v0.2 source update does
+not include a newly built or published disk image.
 
 INSTALL
 1. Drag Transfection Mix Maps.app into Applications.
@@ -14,9 +17,23 @@ window open while working. Close it or quit the app to stop the local server.
 FIRST USE
 Use the top Google section to set up a Desktop OAuth client, sign in, and confirm
 your concentration Sheet. Colab sign-in does not transfer to this app. No Google
-credentials are included. Choose your plate CSV, select LT1 or L2000, and generate
-the workbook. It saves beside the selected CSV unless you choose another existing
-folder. Each workbook has a unique name; no workbook folders are created.
+credentials are included. Choose up to 5 plate CSVs using Command-click or
+Shift-click. Their names and paths appear above the 48-well preview; use its
+filename dropdown to switch layouts. DNA wells are pale purple, with plasmid
+names and masses on hover or keyboard focus. Empty wells are grey and inert.
+
+Select LT1 or L2000. All selected plates use the same run settings, including
+"Final volume to be delivered to each well (µL)" and
+"Transfectant ratio (µL / µg DNA)".
+
+A single plate saves beside its CSV unless you choose another existing folder.
+Selecting multiple plates requires you to choose an output folder for that
+batch. Each plate creates a separate, uniquely named workbook; no workbook
+folders are created.
+
+Only plasmids used in the layouts need usable Google Sheet concentrations.
+Missing or unusable concentrations are listed together in one error box. All
+plates are validated before saving; a validation failure creates no output.
 
 Settings and credentials are saved privately at:
 ~/Library/Application Support/Transfection Mix Maps/local_state/
@@ -31,8 +48,9 @@ After a blocked launch, macOS may offer Open Anyway in System Settings >
 Privacy & Security. Follow the Apple guidance for the alert you see.
 
 TESTING
-Version 0.1 is for testing. Live Google authentication and real native file/folder
-picker interactions have not yet been verified end to end. For setup and
+The v0.2 source has 99 passing automated tests focused on app function. Live
+Google authentication and real native file/folder picker interactions have not
+yet been verified end to end, and no v0.2 installer has been tested. For setup and
 verification details, use Finder's Show Package Contents on the installed app,
 then open Contents > Resources > README.md or VALIDATION.md.
 

@@ -1,6 +1,6 @@
 [project]
 name = "transfection-mix-map"
-version = "0.1"
+version = "0.2"
 description = "Local plate mix maps adapted from Optimized Transfection Mix Maps.ipynb"
 requires-python = ">=3.11,<3.14"
 dependencies = [

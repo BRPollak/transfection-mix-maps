@@ -1,13 +1,55 @@
-# Version 0.1 validation
+# Version 0.2 validation
 
 Updated October 4, 2026.
 
-## Current app revision
+## Version 0.2 source verification
 
-- **104 automated tests pass**: 14 interface/version tests, 39
+- **99 automated tests pass** with `.venv/bin/python -m pytest -q`, covering
+  the interface, plate preview, Google source handling, workflow, and native
+  dialog wrappers.
+- App, project, and lockfile versions agree on `0.2`; the offline lockfile check
+  passed. All nine allowlisted app/configuration files exist for future packaging.
+- Sheet scans no longer block on unrelated tabs or incomplete unused stocks.
+  Tests cover absent, blank, invalid, and conflicting plate-used concentrations,
+  aggregated errors, exact and case-insensitive matching, and no file creation
+  when concentration validation fails. Successful LT1/L2000 exports still pass.
+- Interface tests confirm one compact generation error, cleared previous results,
+  preview population without Google sign-in, and clearing the preview when a
+  newly selected plate is invalid.
+- The suite was reduced from 175 to 99 cases by removing cosmetic wording checks,
+  obsolete single-file chooser coverage, and redundant helper-level cases already
+  covered by actual workbook generation or the active multi-file workflow.
+- Multi-plate checks cover the five-file limit, cancellation, required manual
+  folder selection for each new batch, returning to single-plate folder defaults,
+  preview switching without invalidating results, and duplicate input filenames.
+  Workbooks are staged before publication; failures preserve pre-existing files
+  and attempt to roll back newly published batch workbooks. If rollback cannot
+  remove an output, the error identifies the remaining file. Cleanup failures
+  are reported without falsely claiming that successful outputs do not exist.
+- Browser checks with two synthetic layouts confirmed the filename dropdown in
+  the preview's top-right corner, switching from A1/A2/B1/B2 to C4/F8, the filenames
+  and paths above the preview, and the prompt to manually choose an output folder.
+- The multi-file native AppleScript compiled successfully. Foundation JSON
+  serialization was checked with paths containing quotes and newlines; automated
+  dialog tests cover invalid and unreadable selections as well as the five-file limit.
+- Browser inspection verified a fixed A–F / 1–8 grid with 48 circles, 5 purple
+  DNA wells and 43 inert grey wells using synthetic inputs. Popups for A1 and F8
+  displayed the expected plasmid names and masses without clipping. No browser
+  console errors were reported. Empty-preview rendering and setting labels were
+  also inspected in the unmodified app entry point.
+- Populated browser checks used a temporary fixture-seeded wrapper; automated
+  picker tests use simulated native selections. Live Google authentication and
+  real native file selection remain outside this revision's verification scope.
+- This revision is the v0.2 source update. No v0.2 installer was built or tested.
+  The packaging allowlist includes `plate_preview.py` for a future build. All
+  packaged-app checks below refer only to the published v0.1 build.
+
+## Published v0.1 validation (historical)
+
+- **104 automated tests passed**: 14 interface/version tests, 39
   source/authentication/state-location tests, 24 native-dialog tests, and 27
   workflow tests.
-- Version `0.1` is consistent across the visible app label, browser title, launcher
+- Version `0.1` was consistent across the visible app label, browser title, launcher
   output, project metadata, and lockfile. The offline lockfile check passed.
 - Workflow checks cover known LT1/L2000 volumes, wide/long plate CSV equivalence,
   duplicate/missing concentration failures, impossible volumes, non-finite inputs,
@@ -16,10 +58,10 @@ Updated October 4, 2026.
   filenames, preservation of previous files during name collisions, rejection of
   missing folders without creating them, and temporary-file cleanup after errors.
   Generation creates no output directories or JSON sidecars.
-- The L2000 default is now 25 µL. Tests cover its known volumes at that setting
+- The L2000 default changed to 25 µL. Tests covered its known volumes at that setting
   and migration from the previous 1,500 µL default while preserving other custom
-  values. Conflicting concentrations anywhere in the Sheet stop generation;
-  there is no user-selectable duplicate policy.
+  values. At v0.1, conflicting concentrations anywhere in the Sheet stopped
+  generation; v0.2 limits these checks to plasmids used by the selected plates.
 - Interface checks cover the native plate-file chooser, automatic selection of
   the plate's parent folder for output, a manual folder override, and resetting
   that override when another plate is selected.
@@ -28,7 +70,7 @@ Updated October 4, 2026.
 - Synthetic plate and concentration inputs live in `tests/fixtures/`. Production
   workflow has no demonstration mode, demonstration output names, or demonstration
   result field.
-- Opened the current app in a local Chrome preview and confirmed an
+- Opened the v0.1 app in a local Chrome preview and confirmed an
   error-free single-page interface titled **Generate transfection mix maps**,
   the **Choose plate CSV…** button, L2000 selected with a 25 µL default, no
   duplicate-policy option, direct-save wording, and the exact footer
@@ -42,7 +84,7 @@ Live Google OAuth and access to the user's actual concentration Sheet have not
 been tested: a desktop OAuth client and user authorization are still needed.
 See README.md and the app's first-time Google setup instructions.
 
-## Mac app package
+## Published v0.1 Mac app package (historical)
 
 The v0.1 package targets Apple Silicon and macOS 14 or later. It bundles Python
 and dependencies, launches from a small native window, and opens the local browser
@@ -50,7 +92,7 @@ interface without Terminal or uv. Closing or quitting that window stops the loca
 server. Packaged settings and Google credentials are stored outside the app under
 `~/Library/Application Support/Transfection Mix Maps/local_state/`.
 
-The following package checks passed:
+The following checks passed for the published v0.1 package:
 
 - A relocated standalone bundle imported all app dependencies using its bundled
   CPython 3.12.14 runtime.
@@ -69,7 +111,7 @@ The disk-image builder runs integrity verification and emits a separate SHA-256
 checksum file. The [v0.1 release report](https://github.com/BRPollak/transfection-mix-maps/releases/download/v0.1/Transfection-Mix-Maps-0.1-release.json)
 records the final disk-image result.
 
-This is an initial test release using local ad hoc signing. It is not Developer ID
+The v0.1 package was an initial test release using local ad hoc signing. It is not Developer ID
 signed or notarized. Gatekeeper may display an alert; see
 [Apple's opening instructions](https://support.apple.com/102445).
 
