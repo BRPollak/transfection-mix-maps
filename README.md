@@ -2,8 +2,7 @@
 
 A local Streamlit app adapted from **Optimized Transfection Mix Maps.ipynb**.
 Choose a plate-layout CSV and a saved Google Sheet of DNA concentrations, then
-create an LT1 or L2000 Excel mix map with the notebook's calculation methods and
-Letter-landscape formatting. Both transfectants now default to a 25 µL final volume.
+create an LT1 or L2000 Excel mix map with the notebook's calculation methods.
 Version **0.1** is an initial test release for **Apple Silicon Macs running macOS
 14 or later**.
 
