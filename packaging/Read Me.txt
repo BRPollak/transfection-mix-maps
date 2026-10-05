@@ -1,73 +1,47 @@
-TRANSFECTION MIX MAPS 0.3
+TRANSFECTION MIX MAPS 1.0.0
 Apple Silicon · macOS 14 or later
 
-This readme is prepared for a future v0.3 installer. The v0.3 source update does
-not include a newly built or published disk image.
+Create LT1 or L2000 Excel mix maps from plate CSVs and DNA concentrations
+in Google Sheets. Python and all dependencies are included.
 
-INSTALL
-1. Drag Transfection Mix Maps.app into Applications.
-   Your own ~/Applications folder is also supported.
-2. Eject this disk image.
-3. Open the installed Transfection Mix Maps app.
+INSTALL OR UPDATE
+1. Quit Transfection Mix Maps if it is running.
+2. Open Transfection-Mix-Maps-1.0.0-arm64.pkg and follow the Installer prompts.
+3. Open Transfection Mix Maps from Applications.
 
-Python and dependencies are included. No Terminal, uv, or separate Python setup
-is needed. The small app window opens the interface in your browser. Keep that
-window open while working. Close it or quit the app to stop the local server.
+The installer replaces the app in /Applications and preserves your Google
+connection, cached concentrations, and preferences. No uninstall is needed.
+Keep the small launcher window open while working in your browser. Quit
+through that window when finished.
 
-FIRST USE
-Use the top Google section to set up a Desktop OAuth client, sign in, and confirm
-your concentration Sheet. Colab sign-in does not transfer to this app. No Google
-credentials are included. Choose up to 5 plate CSVs using Command-click or
-Shift-click. Their names and paths appear above the 48-well preview; use its
-filename dropdown to switch layouts. DNA wells are pale purple, with plasmid
-names and masses on hover or keyboard focus. Empty wells are grey and inert.
+USE THE APP
+1. Expand One-time Google setup and follow its Desktop OAuth instructions.
+   Save the client JSON file, sign in, and enter your Google Sheet URL or ID.
+2. Press Confirm Sheet & refresh concentrations. The Sheet needs Plasmid and
+   Concentration (ng/uL) columns. Refresh it after changing stock values.
+3. Choose up to five plate CSVs, select LT1 or L2000, and review the settings.
+4. Choose a save folder. One plate uses its CSV's folder automatically;
+   multiple plates require a folder selection with Save Excel files to….
+5. Press Generate to prepare and review the maps. This does not save files.
+6. Press Download for each workbook to save it to the selected folder.
+   You can change that folder after generating. Existing files are preserved.
 
-Select LT1 or L2000. All selected plates use the same run settings, including
-"Final volume to be delivered to each well (µL)" and
-"Transfectant ratio (µL / µg DNA)".
+L2000 supports up to five positive total DNA masses per plate. Prepare each
+bulk recipe separately and follow its assigned wells and aliquot volume.
+Symbols ▲ ● ■ ◆ ★ identify multiple mixes in the preview and workbook.
+Preparation includes overage; deliver only the configured final volume.
 
-L2000 supports up to five distinct positive total DNA masses per plate, with a
-separate bulk transfectant mix for each. Numbering starts with the largest group
-of wells; ties use the earliest physical row and then column. Every mix uses
-the same well and bulk overage factors. The workbook lists each recipe, its
-assigned wells, and its per-well aliquot. Full numbered mix labels on the plate
-map remain readable in black and white. More than five groups stops the batch.
-Preparation amounts include overage; deliver only the configured final volume.
-
-A single plate saves beside its CSV unless you choose another existing folder.
-Selecting multiple plates requires you to choose an output folder for that
-batch. Each plate creates a separate, uniquely named workbook; no workbook
-folders are created.
-
-Only plasmids used in the layouts need usable Google Sheet concentrations.
-Missing or unusable concentrations are listed together in one error box. All
-plates are validated before saving; a validation failure creates no output.
-Well names are normalized, malformed masses and unsupported units are rejected,
-and populated rows need a well. Used stock concentrations must have one
-unambiguous column in ng/µL. CSV plasmid identifiers are preserved, and source
-labels are written as literal Excel text.
-
-Settings and credentials are saved privately at:
+The app remembers your Google connection and preferences on this Mac.
+Select your plate CSVs again when you return. Private settings are stored at:
 ~/Library/Application Support/Transfection Mix Maps/local_state/
 
 MACOS SECURITY
-The current packaging workflow uses a local ad hoc signature rather than
-Developer ID signing or notarization, so macOS may show an alert for a build
-made with that workflow. If you trust the build and intend to open
-it, follow Apple's per-app instructions:
+The installer is unsigned. The app uses an ad hoc signature and is not
+Developer ID signed or notarized. If macOS blocks it, follow Apple's
+instructions for opening an app you trust:
 https://support.apple.com/102445
 
-After a blocked launch, macOS may offer Open Anyway in System Settings >
-Privacy & Security. Follow the Apple guidance for the alert you see.
-
-TESTING
-The v0.3 source passes 206 automated tests, including 21 interface tests.
-Synthetic 48-well LT1 and five-mix L2000 workbook print layouts were rendered
-and inspected digitally; L2000 assignments were also verified in grayscale.
-This does not replace a physical print check. Live Google authentication and
-real native file/folder picker interactions have not yet been verified end to
-end, and no v0.3 installer has been built or tested. For setup and verification
-details, use Finder's Show Package Contents on the installed app,
-then open Contents > Resources > README.md or VALIDATION.md.
-
-Benjamin Pollak | brpollak@uscd.edu
+HELP
+For input examples and full setup instructions, see README.md. In Finder,
+choose Show Package Contents on the app, then open Contents > Resources.
+VALIDATION.md describes the verification performed.

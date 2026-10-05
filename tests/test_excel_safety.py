@@ -38,7 +38,7 @@ def test_workbooks_keep_formula_like_and_numeric_identifiers_as_literal_text(tmp
     plate = {"name": "=1+3.csv", "path": "=1+4", "bytes": csv_bytes(["Well", "Plasmid", "Mass (ng)"], rows)}
     sheet_label, source_label, timestamp = "=1+2", "=1+5", "=1+6"
     tables = {sheet_label: [["Plasmid", "Concentration"]] + [[name, 100] for name in names]}
-    result = generate_batch([plate], tables, source_label, timestamp, [reagent], default_configs(), tmp_path)
+    result = generate_batch([plate], tables, source_label, timestamp, [reagent], default_configs())
     artifact = result["artifacts"][0]
     workbook = load_workbook(BytesIO(artifact["bytes"]), data_only=False)
     try:
@@ -76,7 +76,7 @@ def test_workbooks_keep_formula_like_and_numeric_identifiers_as_literal_text(tmp
 def test_default_workbook_instructions_distinguish_prepared_and_delivered_volumes(tmp_path, reagent, prepared):
     result = generate(b"Well,Plasmid,Mass (ng)\nA1,Stock,100\n", "plate.csv",
                       {"Stocks": [["Plasmid", "Concentration"], ["Stock", 100]]},
-                      "test", "test-time", [reagent], default_configs(), tmp_path)
+                      "test", "test-time", [reagent], default_configs())
     artifact = result["artifacts"][0]
     workbook = load_workbook(BytesIO(artifact["bytes"]))
     try:
@@ -109,7 +109,7 @@ def test_default_workbook_instructions_distinguish_prepared_and_delivered_volume
 def test_no_dna_wells_have_no_preparation_or_bulk_aliquot(tmp_path, reagent):
     plate = b"Well,Plasmid1,Mass1 (ng)\nA1,Stock,100\nA2,Stock,0\nA3,,\n"
     result = generate(plate, "plate.csv", {"Stocks": [["Plasmid", "Concentration"], ["Stock", 100]]},
-                      "test", "test-time", [reagent], default_configs(), tmp_path)
+                      "test", "test-time", [reagent], default_configs())
     artifact = result["artifacts"][0]
     workbook = load_workbook(BytesIO(artifact["bytes"]))
     try:
@@ -122,9 +122,29 @@ def test_no_dna_wells_have_no_preparation_or_bulk_aliquot(tmp_path, reagent):
             assert not any(text.split()[:1] == [well] for text in texts(workbook["Mix Map"]))
             if reagent == "L2000":
                 assert summary[well]["Bulk transfectant mix"].value in (None, "")
+                assert summary[well]["Bulk mix symbol"].value in (None, "")
                 assert all(well not in mix["Wells"] for mix in artifact["bulk"]["mixes"])
         if reagent == "L2000":
             assert sum(mix["Nonempty wells"] for mix in artifact["bulk"]["mixes"]) == 1
             assert sum(mix["Bulk total_uL"] for mix in artifact["bulk"]["mixes"]) == pytest.approx(18)
+    finally:
+        workbook.close()
+
+
+def test_map_preparation_includes_custom_overages_without_changing_the_aliquot(tmp_path):
+    configs = default_configs()
+    configs["L2000"].update(final_volume_ul=40, dna_to_reagent_ratio_ul_per_ug=3,
+                            well_overage_factor=1.5, bulk_overage_factor=1.7,
+                            reagent_label="Custom reagent", diluent_label="Custom diluent")
+    plate = csv_bytes(["Well", "Plasmid", "Mass (ng)"],
+                      [("A1", "Stock", 100), ("A2", "Stock", 100), ("B1", "Stock", 300)])
+    result = generate(plate, "plate.csv", {"Stocks": [["Plasmid", "Concentration"], ["Stock", 100]]},
+                      "test", "test-time", ["L2000"], configs)
+    workbook = load_workbook(BytesIO(result["artifacts"][0]["bytes"]))
+    try:
+        assert ("Bulk transfectant mix 1 ▲ | 100 ng DNA/well | 2 wells | "
+                "Add 1.53 uL Custom reagent to 100.47 uL Custom diluent. | "
+                "Add 30.00 uL to each assigned DNA mix.") in texts(workbook["Mix Map"])
+        assert any(text.splitlines()[-2:] == ["Add 30.00 uL", "▲"] for text in texts(workbook["Mix Map"]))
     finally:
         workbook.close()

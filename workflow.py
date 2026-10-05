@@ -1,4 +1,4 @@
-"""Validate and publish complete plate workbooks into an existing output folder."""
+"""Generate plate workbooks in memory and save them only on explicit download."""
 from __future__ import annotations
 
 import hashlib
@@ -10,6 +10,7 @@ import time
 import uuid
 from copy import deepcopy
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -67,12 +68,14 @@ def _prepare_plate(plate, tables, reagent, configs, run_warnings):
     return result
 
 
-def _write_staged_workbook(temp, plate, reagent, configs, source_label, source_timestamp, source_hash):
+def _workbook_bytes(plate, reagent, configs, source_label, source_timestamp, source_hash):
+    stream = BytesIO()
     core.write_mix_map_workbook(
-        temp, plate["plate_name"], source_label, reagent, configs[reagent],
+        stream, plate["plate_name"], source_label, reagent, configs[reagent],
         plate["details"], plate["summary"], plate["bulk"], plate["concentrations"], plate["warnings"])
     # Keep provenance inside each workbook; no sidecar file is created.
-    wb = load_workbook(temp)
+    stream.seek(0)
+    wb = load_workbook(stream, rich_text=True)
     try:
         ws = wb["Run config"]
         provenance = [
@@ -88,19 +91,19 @@ def _write_staged_workbook(temp, plate, reagent, configs, source_label, source_t
             row = ws.max_row + 1
             core.literal_cell(ws, row, 1, label)
             core.literal_cell(ws, row, 2, value)
-        wb.save(temp)
+        final = BytesIO()
+        wb.save(final)
     finally:
         wb.close()
-    return temp.read_bytes()
+    return final.getvalue()
 
 
-def generate_batch(plates, tables, source_label, source_timestamp, reagents, configs, output_dir):
-    """Generate one workbook per plate, publishing only after every plate is ready.
+def generate_batch(plates, tables, source_label, source_timestamp, reagents, configs):
+    """Generate one in-memory workbook per plate without an output folder.
 
     ``plates`` contains one to five dictionaries with ``name`` and ``bytes``;
-    ``path`` is optional provenance. Failed validation or staging publishes
-    nothing. If publication fails partway through, this run's new files are
-    removed while pre-existing files are preserved.
+    ``path`` is optional provenance. Validate every plate before constructing
+    workbooks. Only ``save_artifact`` publishes an artifact to the filesystem.
     """
     started = time.perf_counter()
     if not isinstance(plates, (list, tuple)) or not 1 <= len(plates) <= 5:
@@ -112,13 +115,6 @@ def generate_batch(plates, tables, source_label, source_timestamp, reagents, con
         raise core.MixMapError(
             "Choose exactly one transfectant: LT1 or L2000",
             fixes=["Select LT1 or L2000 and generate a separate workbook for each run."],
-        )
-    root = Path(output_dir).expanduser().resolve()
-    if not root.is_dir():
-        raise core.MixMapError(
-            "Choose an existing output folder",
-            details=[str(root)],
-            fixes=["Use Save Excel files to to select a folder that already exists on your Mac."],
         )
     reagent = reagents[0]
     run_warnings = core.validate_run_inputs(reagents, configs, "error")
@@ -146,82 +142,23 @@ def generate_batch(plates, tables, source_label, source_timestamp, reagents, con
 
     source_hash = hashlib.sha256(json.dumps(tables, sort_keys=True).encode()).hexdigest()
     stamp = datetime.now(LOCAL_ZONE).strftime("%Y%m%d_%H%M%S")
-    staged, published, artifacts = [], [], []
-    failure = None
-    remaining_paths, rollback_warnings, cleanup_warnings = [], [], []
-    try:
-        # Stage every complete workbook before creating any visible output file.
-        for plate in prepared:
-            descriptor, temp_name = tempfile.mkstemp(prefix=".mixmap-", suffix=".xlsx", dir=root)
-            os.close(descriptor)
-            temp = Path(temp_name)
-            staged.append(temp)
-            plate["workbook_bytes"] = _write_staged_workbook(
-                temp, plate, reagent, configs, source_label, source_timestamp, source_hash)
-        for temp, plate in zip(staged, prepared):
-            # Hard links publish complete files and never overwrite another run.
-            identity = temp.stat()
-            for attempt in range(10):
-                filename = f"{plate['stem']}_{reagent}_print_mixmap_{stamp}_{uuid.uuid4().hex[:8]}.xlsx"
-                destination = root / filename
-                try:
-                    os.link(temp, destination)
-                except FileExistsError:
-                    if attempt == 9:
-                        raise
-                else:
-                    published.append((destination, identity.st_dev, identity.st_ino))
-                    break
-            artifact = {"name": filename, "path": str(destination), "bytes": plate["workbook_bytes"],
-                        "plate_name": plate["plate_name"], "reagent": reagent,
-                        "summary": plate["summary"], "details": plate["details"], "bulk": plate["bulk"]}
-            if "plate_path" in plate:
-                artifact["plate_path"] = plate["plate_path"]
-            artifacts.append(artifact)
-    except BaseException as exc:
-        failure = exc
-        for destination, device, inode in published:
-            try:
-                # A concurrent replacement must not be mistaken for our output.
-                identity = destination.lstat()
-                if (identity.st_dev, identity.st_ino) == (device, inode):
-                    destination.unlink()
-            except FileNotFoundError:
-                pass
-            except OSError as rollback_error:
-                # Continue rolling back other files even if this one is locked.
-                remaining_paths.append(str(destination))
-                rollback_warnings.append(f"Could not remove or verify {destination}: {rollback_error}")
-    finally:
-        for temp in staged:
-            try:
-                temp.unlink(missing_ok=True)
-            except OSError as cleanup_error:
-                cleanup_warnings.append(f"Temporary file could not be removed: {temp} ({cleanup_error}).")
-
-    if failure is not None:
-        if remaining_paths:
-            error = core.MixMapError(
-                "Batch generation failed — output files may remain",
-                details=[f"Saving failed: {failure}", *rollback_warnings, *cleanup_warnings],
-                fixes=["Check the listed output files before retrying this batch."],
-            )
-            error.outputs_created = True
-            error.remaining_paths = remaining_paths
-            error.cleanup_warnings = cleanup_warnings
-            raise error from failure
-        # Cleanup trouble must not hide the original save failure.
-        if cleanup_warnings:
-            failure.cleanup_warnings = cleanup_warnings
-            failure.add_note("\n".join(cleanup_warnings))
-        raise failure
+    artifacts = []
+    for plate in prepared:
+        filename = f"{plate['stem']}_{reagent}_print_mixmap_{stamp}_{uuid.uuid4().hex[:8]}.xlsx"
+        artifact = {"name": filename,
+                    "bytes": _workbook_bytes(plate, reagent, configs, source_label,
+                                             source_timestamp, source_hash),
+                    "plate_name": plate["plate_name"], "reagent": reagent,
+                    "summary": plate["summary"], "details": plate["details"], "bulk": plate["bulk"]}
+        if "plate_path" in plate:
+            artifact["plate_path"] = plate["plate_path"]
+        artifacts.append(artifact)
 
     all_warnings = []
     for index, plate in enumerate(prepared, start=1):
         label = f"{plate['plate_name']} (plate {index}): " if len(prepared) > 1 else ""
         all_warnings.extend(label + warning for warning in plate["warnings"])
-    all_warnings.extend(f"Workbooks were saved. {warning}" for warning in cleanup_warnings)
-    return {"artifacts": artifacts, "folder": str(root), "plate_count": len(prepared),
+    return {"artifacts": artifacts, "plate_count": len(prepared),
             "warnings": core.dedupe_messages(all_warnings),
             "wells": sum(plate["wells"] for plate in prepared),
             "entries": sum(plate["entries"] for plate in prepared),
@@ -231,7 +168,74 @@ def generate_batch(plates, tables, source_label, source_timestamp, reagents, con
 
 
 def generate(plate_bytes, plate_name, tables, source_label, source_timestamp,
-             reagents, configs, output_dir):
+             reagents, configs):
     """Compatibility wrapper for generating one plate workbook."""
     return generate_batch([{"name": str(plate_name), "bytes": plate_bytes}], tables, source_label,
-                          source_timestamp, reagents, configs, output_dir)
+                          source_timestamp, reagents, configs)
+
+
+def save_artifact(artifact, output_dir):
+    """Save exactly one generated workbook into an existing selected folder.
+
+    The artifact is never mutated. Return the saved ``path`` and any cleanup
+    ``warnings``. Publish a complete file atomically without replacing existing
+    files; repeated saves receive a numbered filename. On failure, preserve the
+    original exception and attach ``cleanup_warnings`` if a temporary remains.
+    """
+    if not output_dir or not str(output_dir).strip():
+        raise core.MixMapError(
+            "Choose an existing output folder",
+            fixes=["Use Save Excel files to to select a folder before downloading."],
+        )
+    root = Path(output_dir).expanduser().resolve()
+    if not root.is_dir():
+        raise core.MixMapError(
+            "Choose an existing output folder",
+            details=[str(root)],
+            fixes=["Use Save Excel files to to select a folder that already exists on your Mac."],
+        )
+    name = artifact.get("name")
+    if (not isinstance(name, str) or not name.strip() or name in {".", ".."}
+            or Path(name).name != name or "\\" in name
+            or not isinstance(artifact.get("bytes"), bytes)):
+        raise core.MixMapError(
+            "The generated workbook is unavailable",
+            fixes=["Generate the mix map again before downloading."],
+        )
+
+    temp = None
+    failure = None
+    cleanup_warnings = []
+    try:
+        descriptor, temp_name = tempfile.mkstemp(prefix=".mixmap-", suffix=".xlsx", dir=root)
+        temp = Path(temp_name)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(artifact["bytes"])
+            handle.flush()
+            os.fsync(handle.fileno())
+        for attempt in range(1000):
+            candidate = name if attempt == 0 else f"{Path(name).stem}_{attempt + 1}{Path(name).suffix}"
+            destination = root / candidate
+            try:
+                os.link(temp, destination)
+            except FileExistsError:
+                if attempt == 999:
+                    raise
+            else:
+                break
+    except BaseException as exc:
+        failure = exc
+    finally:
+        if temp is not None:
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                cleanup_warnings.append(f"Temporary file could not be removed: {temp} ({cleanup_error}).")
+
+    if failure is not None:
+        if cleanup_warnings:
+            failure.cleanup_warnings = cleanup_warnings
+            failure.add_note("\n".join(cleanup_warnings))
+        raise failure
+    return {"path": str(destination),
+            "warnings": [f"Workbook was saved. {warning}" for warning in cleanup_warnings]}

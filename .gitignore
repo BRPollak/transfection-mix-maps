@@ -29,5 +29,7 @@ swift-module-cache/
 *.app/
 *.dmg
 *.dmg.sha256
+*.pkg
+*.pkg.sha256
 *.zip
 *.xlsx

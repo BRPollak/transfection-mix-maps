@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.0 — October 4, 2026
+
+- Generate mix maps in memory and save each workbook only when Download is
+  pressed, using the currently selected folder. Keep previews when changing
+  folders, preserve existing files, and allow retries after save errors.
+- Use ▲ ● ■ ◆ ★ to identify multiple L2000 bulk mixes consistently in the
+  preview, Excel map, and recipe sheets. Include preparation amounts above
+  the map, hide markers for a single group, and use numbered preview badges
+  when there are more than five DNA-mass groups.
+- Add a self-contained Apple Silicon `.pkg` installer for macOS 14 or later.
+  Upgrades replace the application bundle while preserving Google sign-in
+  and preferences. Validate isolated dependencies and exclude private state.
+- Add a matching plate icon to the app header, browser tab, and Mac app bundle.
+- Set app, launcher, project, and installer versions to 1.0.0. Replace the
+  README with concise setup and use instructions and a direct installer link;
+  keep developer instructions in BUILDING.md.
+
 ## 0.3 — October 4, 2026
 
 Source update. No v0.3 installer has been built or published with these changes.

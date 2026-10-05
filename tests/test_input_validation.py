@@ -31,7 +31,7 @@ def test_bad_mass_has_source_row_and_prevents_output(tmp_path, wide, mass):
     plate = f"{columns}\nA1,Stock,{mass}\n".encode()
     tables = {"Stocks": [["Plasmid", "Concentration"], ["Stock", "100"]]}
     with pytest.raises(core.MixMapError, match="unreadable DNA mass") as caught:
-        generate(plate, "plate.csv", tables, "test", "test", ["LT1"], default_configs(), tmp_path)
+        generate(plate, "plate.csv", tables, "test", "test", ["LT1"], default_configs())
     assert "CSV row 2" in caught.value.details[0]
     assert mass in caught.value.details[0]
     assert not list(tmp_path.iterdir())
@@ -63,7 +63,7 @@ def test_ambiguous_mass_columns_never_choose_a_value_silently(tmp_path, plasmid_
     plate = (",".join(columns) + "\nA1,Stock,100,1\n").encode()
     tables = {"Stocks": [["Plasmid", "Concentration"], ["Stock", "100"]]}
     with pytest.raises(core.MixMapError, match="Ambiguous DNA mass columns"):
-        generate(plate, "plate.csv", tables, "test", "test", ["LT1"], default_configs(), tmp_path)
+        generate(plate, "plate.csv", tables, "test", "test", ["LT1"], default_configs())
     assert not list(tmp_path.iterdir())
 
 

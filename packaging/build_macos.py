@@ -1,6 +1,7 @@
-"""Build a self-contained Apple Silicon testing release from the locked environment.
+"""Build a self-contained Apple Silicon release from the locked environment.
 
-Run with this project's .venv/bin/python. Nothing is installed on the build Mac.
+Run with an isolated, locked Python 3.12 environment (see BUILDING.md).
+Nothing is installed in Applications on the build Mac.
 The Python runtime and dependency licenses are retained; private state is excluded.
 """
 from __future__ import annotations
@@ -14,6 +15,8 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -21,9 +24,14 @@ sys.path.insert(0, str(PROJECT))
 from app_version import VERSION
 
 APP_FILES = ["app.py", "app_version.py", "core.py", "sources.py", "native_dialogs.py",
-             "workflow.py", "plate_preview.py", "launch.py", ".streamlit/config.toml"]
+             "workflow.py", "plate_preview.py", "launch.py", ".streamlit/config.toml",
+             "assets/mix-maps-icon.png"]
 DEV_FILES = {"_virtualenv.pth", "_virtualenv.py", "_pytest", "pytest", "pluggy", "iniconfig", "py.py"}
 DEV_PREFIXES = ("pytest-", "pluggy-", "iniconfig-")
+APP_NAME = "Transfection Mix Maps.app"
+BUNDLE_ICON = "mix-maps.icns"
+BUNDLE_ID = "edu.uscd.brpollak.transfection-mix-maps"
+PACKAGE_ID = BUNDLE_ID + ".installer"
 
 
 def ignore(directory, names):
@@ -34,44 +42,145 @@ def run(*args):
     subprocess.run([str(a) for a in args], check=True)
 
 
-def finish_package(staging, dmg):
-    app = staging / "Transfection Mix Maps.app"
+def validate_build_environment():
+    if sys.platform != "darwin" or sys.version_info[:2] != (3, 12):
+        raise RuntimeError("Build with the app's macOS Python 3.12 environment.")
+    packages = Path(sysconfig.get_paths()["purelib"]).resolve()
+    external = sorted({d.metadata["Name"] for d in importlib.metadata.distributions()
+                       if not Path(d.locate_file("")).resolve().is_relative_to(packages)})
+    if external:
+        raise RuntimeError(
+            "Build with an isolated uv sync --locked environment. Dependencies inherited "
+            "from outside this environment would be omitted: " + ", ".join(external)
+        )
+    for name in ["streamlit", "pandas", "openpyxl", "gspread", "google-auth-oauthlib"]:
+        importlib.metadata.distribution(name)  # Fail before creating an incomplete bundle.
+
+
+def checksum(artifact):
+    with artifact.open("rb") as handle:
+        digest = hashlib.file_digest(handle, "sha256").hexdigest()
+    artifact.with_suffix(artifact.suffix + ".sha256").write_text(f"{digest}  {artifact.name}\n")
+    return {"path": str(artifact), "bytes": artifact.stat().st_size, "sha256": digest}
+
+
+def build_installer(app, pkg):
+    """Use Installer's atomic bundle upgrade; never touch Application Support.
+
+    The fixed destination matches the installed drag-and-drop v0.1 app. No
+    uninstall script is needed: upgrade replaces the whole bundle, including
+    files removed since v0.1. Disable relocation so a mounted DMG or build copy
+    cannot become the installation target. No user data is in the payload.
+    """
+    pkg.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="installer-", dir=app.parent.parent) as work:
+        work = Path(work)
+        root = work / "payload"
+        shutil.copytree(app, root / APP_NAME, symlinks=True)
+        components = [{
+            "RootRelativeBundlePath": APP_NAME,
+            "BundleIsRelocatable": False,
+            "BundleIsVersionChecked": True,
+            "BundleHasStrictIdentifier": True,
+            "BundleOverwriteAction": "upgrade",
+        }]
+        component_plist = work / "components.plist"
+        component_plist.write_bytes(plistlib.dumps(components))
+        component = work / "Application.pkg"
+        run("/usr/bin/pkgbuild", "--root", root, "--component-plist", component_plist,
+            "--identifier", PACKAGE_ID, "--version", VERSION,
+            "--install-location", "/Applications", "--ownership", "recommended", component)
+
+        distribution = ET.Element("installer-gui-script", minSpecVersion="2")
+        ET.SubElement(distribution, "title").text = f"Transfection Mix Maps {VERSION}"
+        ET.SubElement(distribution, "options", customize="never",
+                      **{"require-scripts": "false", "hostArchitectures": "arm64"})
+        ET.SubElement(distribution, "domains", enable_anywhere="false",
+                      enable_currentUserHome="false", enable_localSystem="true")
+        versions = ET.SubElement(ET.SubElement(distribution, "volume-check"), "allowed-os-versions")
+        ET.SubElement(versions, "os-version", min="14.0")
+        ET.SubElement(distribution, "readme", file="Read Me.txt")
+        outline = ET.SubElement(distribution, "choices-outline")
+        ET.SubElement(outline, "line", choice="application")
+        choice = ET.SubElement(distribution, "choice", id="application", visible="false",
+                               title="Transfection Mix Maps")
+        ET.SubElement(choice, "pkg-ref", id=PACKAGE_ID)
+        ET.SubElement(distribution, "pkg-ref", id=PACKAGE_ID, version=VERSION,
+                      onConclusion="none").text = component.name
+        close = ET.SubElement(ET.SubElement(distribution, "pkg-ref", id=PACKAGE_ID), "must-close")
+        ET.SubElement(close, "app", id=BUNDLE_ID)
+        distribution_path = work / "Distribution.xml"
+        ET.ElementTree(distribution).write(distribution_path, encoding="utf-8", xml_declaration=True)
+        installer_resources = work / "resources"
+        installer_resources.mkdir()
+        shutil.copy2(PROJECT / "packaging" / "Read Me.txt", installer_resources / "Read Me.txt")
+        run("/usr/bin/productbuild", "--distribution", distribution_path,
+            "--package-path", work, "--resources", installer_resources, pkg)
+
+
+def finish_package(staging, dmg=None, pkg=None):
+    app = staging / APP_NAME
     resources = app / "Contents" / "Resources"
-    for name in ["README.md", "VALIDATION.md", "CHANGELOG.md"]:
+    info = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
+    if info["CFBundleIdentifier"] != BUNDLE_ID or info["CFBundleShortVersionString"] != VERSION:
+        raise RuntimeError("The staged app identity/version does not match this source.")
+    bundled_files = {str(p.relative_to(resources / "app"))
+                     for p in (resources / "app").rglob("*") if p.is_file()}
+    if bundled_files != set(APP_FILES):
+        raise RuntimeError("The staged app must contain only the allowlisted application files.")
+    for name in APP_FILES:
+        if (resources / "app" / name).read_bytes() != (PROJECT / name).read_bytes():
+            raise RuntimeError(f"Rebuild the staged app: {name} differs from this source.")
+    icon = resources / BUNDLE_ICON
+    if (info.get("CFBundleIconFile") != BUNDLE_ICON or not icon.is_file()
+            or icon.read_bytes() != (PROJECT / "assets" / BUNDLE_ICON).read_bytes()):
+        raise RuntimeError("Rebuild the staged app: its app icon is missing or differs from this source.")
+    for name in ["README.md", "BUILDING.md", "VALIDATION.md", "CHANGELOG.md"]:
         shutil.copy2(PROJECT / name, resources / name)
     shutil.copy2(PROJECT / "packaging" / "Read Me.txt", staging / "Read Me.txt")
     run("/usr/bin/codesign", "--force", "--deep", "--sign", "-", "--timestamp=none", app)
     run("/usr/bin/codesign", "--verify", "--deep", "--strict", app)
-    if not (staging / "Applications").is_symlink():
-        (staging / "Applications").symlink_to("/Applications", target_is_directory=True)
-    dmg.parent.mkdir(parents=True, exist_ok=True)
-    run("/usr/bin/hdiutil", "create", "-volname", f"Transfection Mix Maps {VERSION}",
-        "-srcfolder", staging, "-format", "UDZO", "-ov", dmg)
-    run("/usr/bin/hdiutil", "verify", dmg)
-    with dmg.open("rb") as handle:
-        digest = hashlib.file_digest(handle, "sha256").hexdigest()
-    dmg.with_suffix(".dmg.sha256").write_text(f"{digest}  {dmg.name}\n")
-    print(json.dumps({"app": str(app), "dmg": str(dmg), "bytes": dmg.stat().st_size,
-                      "version": VERSION, "sha256": digest}, indent=2))
+    artifacts = []
+    if pkg:
+        build_installer(app, pkg)
+        artifacts.append(checksum(pkg))
+    if dmg:
+        if not (staging / "Applications").is_symlink():
+            (staging / "Applications").symlink_to("/Applications", target_is_directory=True)
+        dmg.parent.mkdir(parents=True, exist_ok=True)
+        run("/usr/bin/hdiutil", "create", "-volname", f"Transfection Mix Maps {VERSION}",
+            "-srcfolder", staging, "-format", "UDZO", "-ov", dmg)
+        run("/usr/bin/hdiutil", "verify", dmg)
+        artifacts.append(checksum(dmg))
+    print(json.dumps({"app": str(app), "version": VERSION, "artifacts": artifacts}, indent=2))
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--staging", type=Path, required=True)
-    parser.add_argument("--dmg", type=Path, required=True)
+    parser.add_argument("--dmg", type=Path)
+    parser.add_argument("--pkg", type=Path, help="Installer that replaces the app in /Applications")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--bundle-only", action="store_true")
     modes.add_argument("--package-only", action="store_true")
     args = parser.parse_args()
+    if not args.bundle_only and not (args.dmg or args.pkg):
+        parser.error("Specify --pkg and/or --dmg, or --bundle-only.")
     staging = args.staging.resolve()
-    app = staging / "Transfection Mix Maps.app"
+    app = staging / APP_NAME
+    outputs = [p.resolve() for p in (args.dmg, args.pkg) if p]
+    if any(p.exists() for p in outputs):
+        parser.error("Build output already exists; use a new filename.")
+    if any(p.is_relative_to(staging) for p in outputs):
+        parser.error("Build outputs must be outside the staging directory.")
     if args.package_only:
-        if not app.is_dir() or args.dmg.exists():
-            parser.error("Packaging requires an existing staged app and a new DMG filename.")
-        finish_package(staging, args.dmg)
+        if not app.is_dir():
+            parser.error("Packaging requires an existing staged app.")
+        finish_package(staging, args.dmg, args.pkg)
         return
-    if app.exists() or args.dmg.exists():
-        parser.error("Build destinations already exist; use a fresh staging folder and DMG filename.")
+    if app.exists():
+        parser.error("Build destination already exists; use a fresh staging folder.")
+    validate_build_environment()
     resources = app / "Contents" / "Resources"
     bundled_app = resources / "app"
     runtime = resources / "runtime"
@@ -82,8 +191,6 @@ def main():
 
     base = Path(sys.base_prefix)
     python_minor = f"python{sys.version_info.major}.{sys.version_info.minor}"
-    if sys.platform != "darwin" or sys.version_info[:2] != (3, 12):
-        parser.error("Build with the app's macOS Python 3.12 environment.")
     shutil.copy2(base / "bin" / python_minor, runtime / "bin" / python_minor)
     (runtime / "bin" / "python3").symlink_to(python_minor)
     (runtime / "bin" / "python").symlink_to(python_minor)
@@ -114,7 +221,8 @@ def main():
         target = bundled_app / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(PROJECT / name, target)
-    for name in ["README.md", "VALIDATION.md", "CHANGELOG.md"]:
+    shutil.copy2(PROJECT / "assets" / BUNDLE_ICON, resources / BUNDLE_ICON)
+    for name in ["README.md", "BUILDING.md", "VALIDATION.md", "CHANGELOG.md"]:
         shutil.copy2(PROJECT / name, resources / name)
     package_inventory = sorted(
         [{"name": d.metadata["Name"], "version": d.version}
@@ -123,7 +231,7 @@ def main():
     )
     (resources / "dependencies.json").write_text(json.dumps(package_inventory, indent=2) + "\n")
     (resources / "THIRD_PARTY_NOTICES.txt").write_text(
-        "This testing release includes CPython and third-party Python packages.\n"
+        "This release includes CPython and third-party Python packages.\n"
         "CPython's license is in runtime/lib/python3.12/LICENSE.txt.\n"
         "Package copyright notices and licenses are retained in runtime/lib/python3.12/"
         "site-packages/*dist-info/ and the package directories.\n"
@@ -138,8 +246,9 @@ def main():
     plist = {
         "CFBundleName": "Transfection Mix Maps",
         "CFBundleDisplayName": "Transfection Mix Maps",
-        "CFBundleIdentifier": "edu.uscd.brpollak.transfection-mix-maps",
+        "CFBundleIdentifier": BUNDLE_ID,
         "CFBundleExecutable": "MixMaps",
+        "CFBundleIconFile": BUNDLE_ICON,
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": VERSION,
         "CFBundleVersion": VERSION,
@@ -155,13 +264,13 @@ def main():
         "-module-cache-path", staging.parent / "swift-module-cache",
         "-target", "arm64-apple-macos14.0", "-framework", "AppKit",
         PROJECT / "packaging" / "Launcher.swift", "-o", executable)
-    # Ad-hoc signing is for this local test release, not Developer ID/notarization.
+    # The app uses an ad hoc signature; it is not Developer ID signed or notarized.
     run("/usr/bin/codesign", "--force", "--deep", "--sign", "-", "--timestamp=none", app)
     run("/usr/bin/codesign", "--verify", "--deep", "--strict", app)
     if args.bundle_only:
         print(json.dumps({"app": str(app), "version": VERSION}, indent=2))
     else:
-        finish_package(staging, args.dmg)
+        finish_package(staging, args.dmg, args.pkg)
 
 
 if __name__ == "__main__":

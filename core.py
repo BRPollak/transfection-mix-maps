@@ -8,11 +8,13 @@ import os
 import re
 import unicodedata
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import pandas as pd
 from openpyxl import Workbook
+from openpyxl.cell.rich_text import CellRichText, TextBlock
+from openpyxl.cell.text import InlineFont
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.properties import PageSetupProperties
@@ -452,6 +454,47 @@ def row_sort_key(label):
     return total
 
 
+BULK_MIX_SYMBOLS = ("▲", "●", "■", "◆", "★")
+
+
+def group_dna_masses(long_df):
+    """Rank positive DNA totals consistently for the preview and bulk recipes.
+
+    Decimal sums make 0.1 + 0.2 and 0.3 one group without rounding distinct
+    requested totals together. Numbering restarts for each complete plate.
+    """
+    if long_df is None or long_df.empty:
+        return []
+    totals = {}
+    for record in long_df.to_dict("records"):
+        row, col = parse_well(record["Well"])
+        try:
+            mass = Decimal(str(record["Mass_ng"]))
+        except (InvalidOperation, ValueError):
+            continue
+        if not mass.is_finite() or mass <= 0:
+            continue
+        position = (row, col)
+        totals[position] = totals.get(position, Decimal(0)) + mass
+
+    grouped = {}
+    for position, mass in totals.items():
+        grouped.setdefault(mass, []).append(position)
+    physical_position = lambda position: (row_sort_key(position[0]), position[1])
+    ordered = sorted(grouped.items(), key=lambda item: (-len(item[1]), min(map(physical_position, item[1]))))
+    groups = []
+    for number, (mass, positions) in enumerate(ordered, 1):
+        symbol = ("" if len(ordered) == 1 else BULK_MIX_SYMBOLS[number - 1]
+                  if len(ordered) <= len(BULK_MIX_SYMBOLS) else str(number))
+        groups.append({
+            "Number": number,
+            "Total DNA_ng": mass,
+            "Wells": [f"{row}{col}" for row, col in sorted(positions, key=physical_position)],
+            "Symbol": symbol,
+        })
+    return groups
+
+
 def row_label_from_index(index):
     letters = []
     while index > 0:
@@ -817,15 +860,13 @@ def calculate_mix(wells_df, matched_df, config):
     details["Base DNA volume_uL"] = details["Mass_ng"] / details["Concentration_ng_per_uL"]
     details["Working DNA volume_uL"] = details["Base DNA volume_uL"] * config["well_overage_factor"]
 
+    mass_groups = group_dna_masses(details)
+    mass_keys = {well: group["Total DNA_ng"] for group in mass_groups for well in group["Wells"]}
     summary_rows = []
-    mass_keys = {}
     for _, well in wells_df.iterrows():
         well_name = well["Well"]
         subset = details[details["Well"] == well_name] if not details.empty else pd.DataFrame()
-        # Sum decimal representations so 0.1 + 0.2 and 0.3 use the same tube,
-        # without rounding genuinely different requested masses together.
-        mass_keys[well_name] = sum((Decimal(str(value)) for value in subset["Mass_ng"]), Decimal(0))
-        total_mass = float(mass_keys[well_name])
+        total_mass = float(mass_keys.get(well_name, Decimal(0)))
         total_dna_working = float(subset["Working DNA volume_uL"].sum()) if not subset.empty else 0.0
         reagent_working = (
             total_mass / 1000.0
@@ -945,33 +986,32 @@ def calculate_mix(wells_df, matched_df, config):
 
     bulk = {}
     if config.get("mode") == "two_tube":
-        grouped = {}
-        for index, row in summary[summary["Total DNA_ng"] > 0].iterrows():
-            grouped.setdefault(mass_keys[row["Well"]], []).append(index)
-        position = lambda index: (row_sort_key(summary.at[index, "Row"]), int(summary.at[index, "Col"]))
-        ordered = sorted(grouped.items(), key=lambda item: (-len(item[1]), min(map(position, item[1]))))
-        if len(ordered) > 5:
+        if len(mass_groups) > 5:
             raise MixMapError(
                 "L2000 supports at most 5 different total DNA masses per plate",
-                details=[f"This plate has {len(ordered)} different positive total DNA masses."] + [
-                    f"{mass:g} ng: {summarize_list(summary.loc[sorted(indices, key=position), 'Well'].tolist())}"
-                    for mass, indices in ordered
+                details=[f"This plate has {len(mass_groups)} different positive total DNA masses."] + [
+                    f"{group['Total DNA_ng']:g} ng: {summarize_list(group['Wells'])}"
+                    for group in mass_groups
                 ],
                 fixes=["Use at most five total DNA masses per plate, or split this layout into separate plates."],
             )
         summary["Bulk transfectant mix"] = ""
+        summary["Bulk mix symbol"] = ""
+        well_indices = {row["Well"]: index for index, row in summary.iterrows()}
         mixes = []
-        for number, (mass, indices) in enumerate(ordered, 1):
-            indices = sorted(indices, key=position)
+        for mass_group in mass_groups:
+            indices = [well_indices[well] for well in mass_group["Wells"]]
             group = summary.loc[indices]
-            label = f"Bulk transfectant mix {number}"
+            label = f"Bulk transfectant mix {mass_group['Number']}"
             summary.loc[indices, "Bulk transfectant mix"] = label
+            summary.loc[indices, "Bulk mix symbol"] = mass_group["Symbol"]
             bulk_overage = config.get("bulk_overage_factor", 1.0)
             reagent_total = float(group["Reagent_uL"].sum()) * bulk_overage
             diluent_total = float(group["Transfection diluent_uL"].sum()) * bulk_overage
             mix = {
                 "Mix": label,
-                "Total DNA_ng": float(mass),
+                "Symbol": mass_group["Symbol"],
+                "Total DNA_ng": float(mass_group["Total DNA_ng"]),
                 "Wells": group["Well"].tolist(),
                 "Nonempty wells": len(indices),
                 "Well overage factor": config["well_overage_factor"],
@@ -1135,8 +1175,12 @@ def format_well_mix_lines(row, details, config):
     if config.get("mode") == "single_tube":
         lines.append(f"{format_volume_ul(row['Reagent_uL'])}  {shorten_label(config['reagent_label'])}")
     else:
-        lines.append(row["Bulk transfectant mix"])
+        symbol = row.get("Bulk mix symbol", "")
+        if not symbol:
+            lines.append(row["Bulk transfectant mix"])
         lines.append(f"Add {format_volume_ul(row['Transfection mix target_uL'])}")
+        if symbol:
+            lines.append(symbol)
     return lines
 
 
@@ -1157,15 +1201,13 @@ def apply_print_settings(ws, last_col, last_row):
     ws.print_area = f"A1:{get_column_letter(last_col)}{last_row}"
 
 
-BULK_MIX_COLORS = ("DDEBF7", "E2F0D9", "FFF2CC", "E4DFEC", "FCE4D6")
-
-
 def write_bulk_mixes_sheet(wb, bulk, config):
-    """Printable recipes, using the same labels and colors as the plate map."""
+    """Printable recipes, using the same labels and symbols as the plate map."""
     ws = wb.create_sheet("Bulk transfectant mixes")
     title_font = Font(name="Arial", bold=True, size=15)
     body_font = Font(name="Arial", size=11)
     white = PatternFill("solid", fgColor="FFFFFF")
+    recipe_fill = PatternFill("solid", fgColor="E2F0D9")
     write_merged_note(ws, 1, 4, "L2000 bulk transfectant mixes", white, title_font)
     ws.row_dimensions[1].height = 26
     write_merged_note(ws, 2, 4,
@@ -1179,11 +1221,11 @@ def write_bulk_mixes_sheet(wb, bulk, config):
                       "Preparation includes extra for pipetting loss.", white, body_font)
     ws.row_dimensions[3].height = 30
     row = 5
-    for number, mix in enumerate(bulk["mixes"]):
-        fill = PatternFill("solid", fgColor=BULK_MIX_COLORS[number])
+    for mix in bulk["mixes"]:
+        label = f"{mix['Mix']} {mix.get('Symbol', '')}".rstrip()
         write_merged_note(ws, row, 4,
-                          f"{mix['Mix']} | {mix['Total DNA_ng']:.12g} ng DNA/well | {mix['Nonempty wells']} wells",
-                          fill, Font(name="Arial", bold=True, size=12))
+                          f"{label} | {mix['Total DNA_ng']:.12g} ng DNA/well | {mix['Nonempty wells']} wells",
+                          recipe_fill, Font(name="Arial", bold=True, size=12))
         ws.row_dimensions[row].height = 25
         recipe = (
             f"Prepare: {format_volume_ul(mix['Bulk reagent_uL'])} {config['reagent_label']} + "
@@ -1245,6 +1287,7 @@ def write_mix_map_workbook(
     header_font = Font(name="Arial", bold=True, size=11)
     well_font_size = 8 if len(cols) >= 10 else 8.5
     well_font = Font(name="Arial", size=well_font_size)
+    symbol_font = InlineFont(rFont="Arial", sz=16, b=True)
     empty_font = Font(name="Arial", size=8, color="9AA0A6")
 
     title = f"{Path(csv_name).stem} - {config['display_name']} print mix map"
@@ -1271,9 +1314,10 @@ def write_mix_map_workbook(
 
     notes = []
     if config.get("mode") == "two_tube":
+        assignment = "symbol" if len(bulk.get("mixes", [])) > 1 else "mix name"
         notes.append(
-            "Prepare separate tubes using the Bulk transfectant mixes sheet. "
-            "Each well below names its assigned mix and the aliquot to add to its DNA mix."
+            "Prepare each bulk mix in a separate tube using the instructions below. "
+            f"Each well shows its assigned {assignment} and the aliquot to add to its DNA mix."
         )
         notes.append(
             f"Prepare {format_volume_ul(config['final_volume_ul'] * config['well_overage_factor'] / 2)} "
@@ -1288,19 +1332,24 @@ def write_mix_map_workbook(
     notes.append(f"Deliver {format_volume_ul(config['final_volume_ul'])} to each DNA-containing well. "
                  f"Preparation volumes include well overage x{config['well_overage_factor']:g} for pipetting loss.")
     for mix in bulk.get("mixes", []):
-        notes.append(f"{mix['Mix']} | {mix['Total DNA_ng']:.12g} ng DNA/well | "
-                     f"{mix['Nonempty wells']} wells | Add {format_volume_ul(mix['Per-well transfection mix_uL'])} "
+        label = f"{mix['Mix']} {mix.get('Symbol', '')}".rstrip()
+        notes.append(f"{label} | {mix['Total DNA_ng']:.12g} ng DNA/well | "
+                     f"{mix['Nonempty wells']} wells | "
+                     f"Add {format_volume_ul(mix['Bulk reagent_uL'])} {config['reagent_label']} to "
+                     f"{format_volume_ul(mix['Bulk diluent_uL'])} {config['diluent_label']}. | "
+                     f"Add {format_volume_ul(mix['Per-well transfection mix_uL'])} "
                      "to each assigned DNA mix.")
     for warning in limited_examples(dedupe_messages(case_warnings or []), 3):
         notes.append(f"WARNING: {warning}")
 
-    mix_fills = {mix["Mix"]: PatternFill("solid", fgColor=BULK_MIX_COLORS[index])
-                 for index, mix in enumerate(bulk.get("mixes", []))}
     for offset, note in enumerate(notes):
         row_idx = 3 + offset
-        fill = next((fill for label, fill in mix_fills.items() if note.startswith(label + " |")), note_fill)
-        write_merged_note(ws, row_idx, last_col, note, fill, note_font)
-        ws.row_dimensions[row_idx].height = 30 if note.startswith("WARNING:") or len(note) > 120 else 18
+        write_merged_note(ws, row_idx, last_col, note, note_fill, note_font)
+        if config.get("mode") == "two_tube":
+            wrapped_lines = sum(max(1, math.ceil(len(line) / 120)) for line in note.splitlines())
+            ws.row_dimensions[row_idx].height = max(30 if note.startswith("WARNING:") else 18, 15 * wrapped_lines)
+        else:
+            ws.row_dimensions[row_idx].height = 30 if note.startswith("WARNING:") or len(note) > 120 else 18
 
     start_row = 3 + len(notes) + 1
     corner = ws.cell(start_row, 1, "Row")
@@ -1319,6 +1368,7 @@ def write_mix_map_workbook(
 
     summary_lookup = {(row["Row"], int(row["Col"])): row for _, row in summary.iterrows()}
     max_lines_by_row = {}
+    symbol_rows = set()
     for row_pos, row_label in enumerate(rows, start=1):
         sheet_row = start_row + row_pos
         label = ws.cell(sheet_row, 1, row_label)
@@ -1331,11 +1381,15 @@ def write_mix_map_workbook(
             summary_row = summary_lookup.get((row_label, col_num))
             lines = format_well_mix_lines(summary_row, details, config) if summary_row is not None else []
             max_lines = max(max_lines, len(lines) or 1)
-            cell = ws.cell(sheet_row, start_col + col_pos - 1, "\n".join(lines))
+            value = "\n".join(lines)
+            if lines and config.get("mode") == "two_tube" and summary_row.get("Bulk mix symbol"):
+                value = CellRichText("\n".join(lines[:-1]) + "\n", TextBlock(symbol_font, lines[-1]))
+                symbol_rows.add(row_label)
+            cell = ws.cell(sheet_row, start_col + col_pos - 1, value)
             cell.alignment = Alignment(wrap_text=True, horizontal="left", vertical="top")
             cell.border = plate_border(row_pos, col_pos, len(rows), len(cols))
             if lines:
-                cell.fill = mix_fills.get(summary_row.get("Bulk transfectant mix"), active_fill)
+                cell.fill = active_fill
                 cell.font = well_font
             else:
                 cell.fill = empty_fill
@@ -1349,8 +1403,9 @@ def write_mix_map_workbook(
     for row_pos, row_label in enumerate(rows, start=1):
         sheet_row = start_row + row_pos
         line_count = max_lines_by_row.get(row_label, 1)
-        # Group labels and aliquots must not be clipped by the old six-line cap.
-        ws.row_dimensions[sheet_row].height = max(48, 14 + 12 * line_count)
+        # Reserve a taller final line for the print-friendly mix symbol.
+        symbol_extra_height = 10 if row_label in symbol_rows else 0
+        ws.row_dimensions[sheet_row].height = max(48, 14 + 12 * line_count + symbol_extra_height)
 
     last_grid_row = start_row + len(rows)
     ws.freeze_panes = ws.cell(start_row + 1, start_col).coordinate
@@ -1392,7 +1447,7 @@ def write_mix_map_workbook(
         "Transfection diluent_uL",
     ]
     if bulk:
-        summary_cols.append("Bulk transfectant mix")
+        summary_cols.extend(["Bulk transfectant mix", "Bulk mix symbol"])
     write_dataframe(summary_ws, summary[summary_cols].copy())
 
     if case_warnings:
@@ -1428,6 +1483,7 @@ def write_mix_map_workbook(
     write_dataframe(config_ws, pd.DataFrame(config_rows))
 
     wb.active = 0
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    if isinstance(output_path, (str, bytes, os.PathLike)):
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     wb.save(output_path)
     return output_path
