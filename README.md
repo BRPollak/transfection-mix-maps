@@ -50,10 +50,46 @@ saved concentrations; data older than 24 hours requires confirmation before use.
 
 ## Prepare your inputs
 
+### Download starter templates
+
+Start with these blank resources, then fill in your own stocks and plate contents:
+
+| Resource | Download or copy | What is included |
+|---|---|---|
+| Google Sheets stock inventory | [Make a Google Sheets copy](https://docs.google.com/spreadsheets/d/1R1vTX8dlPZzP7VYW5ZQKA4B9Uhh7BCWBNDLjdkSBr-4/copy) · [Download workbook (.xlsx)](examples/google-sheets-stocks-template.xlsx?raw=true) | Two formatted inventory tabs with headers and blank stock records. |
+| 48-well plate layout | [Download plate CSV](examples/48-well-plate-layout.csv?raw=true) | Wells **A1–F8**, with three blank plasmid/mass pairs per well. |
+
+**Google Sheets template:** the shared template is view-only; make your own
+editable copy using the link above. To use the downloaded workbook instead,
+open a blank Google Sheet and choose **File → Import → Upload**,
+select the `.xlsx`, and import it as a new spreadsheet. Fill in **Plasmid name**
+and **Concentration (ng/μL)** on either inventory tab; the other columns are optional
+for the app. Paste the URL of your own native Google Sheet into the app and
+refresh its concentrations.
+
+![Blank Google Sheets stock template with inventory headers and no plasmid records](examples/google-sheets-template.jpg)
+
+**48-well CSV template:** open the downloaded CSV in Google Sheets, Excel, or a
+text editor. Keep the header and well labels; enter matching plasmid names and
+DNA masses in ng in the numbered column pairs. Leave unused pairs and wells
+blank. Save or export as **CSV**, then select **48-well** in the app and choose
+your filled CSV.
+
+![Blank 48-well plate layout showing A1–F8 and empty plasmid and mass columns](examples/48-well-plate-layout.svg)
+
+Both templates are intentionally empty: all stock records have been removed
+from the inventory, and all plasmid names and masses have been removed from the
+plate layout. Add at least one plasmid with positive DNA mass and a matching
+positive stock concentration before generating a mix map.
+
+### Input formats
+
 Your **Google Sheet** needs a header row with `Plasmid` and
-`Concentration (ng/uL)`. Concentrations must be in ng/µL. Multiple worksheet tabs
-are supported. Each plasmid used in a plate needs a positive concentration with
-no conflicting entries. Unused stocks do not need concentrations.
+`Concentration (ng/uL)` (the template's `Plasmid name` and
+`Concentration (ng/μL)` headers are also supported). Concentrations must be in
+ng/µL. Multiple worksheet tabs are supported. Each plasmid used in a plate needs
+a positive concentration with no conflicting entries. Unused stocks do not need
+concentrations.
 
 Your **plate CSV** can use either format. Use plasmid names that match the Sheet,
 well names such as `A1`, and nonnegative DNA masses in ng.

@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="830" viewBox="0 0 1100 830" role="img" aria-labelledby="title description">
+<title id="title">Blank 48-well plate layout template</title>
+<desc id="description">Six rows A through F and eight columns 1 through 8. All 48 wells have blank plasmid and mass assignments. The CSV contains Well plus three numbered Plasmid and Mass (ng) pairs.</desc>
+<style>text{font-family:Arial,Helvetica,sans-serif;fill:#183b42}.title{font-size:28px;font-weight:700}.subtitle{font-size:16px;fill:#50656b}.axis{font-size:17px;font-weight:700}.well{font-size:15px;fill:#3e626b}.tablehead{font-size:14px;font-weight:700}.cell{font-size:14px}.note{font-size:14px;fill:#50656b}</style>
+<rect width="1100" height="830" rx="18" fill="#f6f9f8"/>
+<text x="42" y="52" class="title">48-well plate layout</text>
+<text x="42" y="80" class="subtitle">A blank starting point · 48 wells · 3 plasmid / mass pairs per well</text>
+<rect x="42" y="106" width="1016" height="465" rx="16" fill="#ffffff" stroke="#d4e1e2"/>
+
+<text x="184" y="140" text-anchor="middle" class="axis">1</text>
+<text x="300" y="140" text-anchor="middle" class="axis">2</text>
+<text x="416" y="140" text-anchor="middle" class="axis">3</text>
+<text x="532" y="140" text-anchor="middle" class="axis">4</text>
+<text x="648" y="140" text-anchor="middle" class="axis">5</text>
+<text x="764" y="140" text-anchor="middle" class="axis">6</text>
+<text x="880" y="140" text-anchor="middle" class="axis">7</text>
+<text x="996" y="140" text-anchor="middle" class="axis">8</text>
+<text x="85" y="190" text-anchor="middle" class="axis">A</text>
+<circle cx="184" cy="184" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="184" y="189" text-anchor="middle" class="well">A1</text>
+<circle cx="300" cy="184" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="300" y="189" text-anchor="middle" class="well">A2</text>
+<circle cx="416" cy="184" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="416" y="189" text-anchor="middle" class="well">A3</text>
+<circle cx="532" cy="184" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="532" y="189" text-anchor="middle" class="well">A4</text>
+<circle cx="648" cy="184" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="648" y="189" text-anchor="middle" class="well">A5</text>
+<circle cx="764" cy="184" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="764" y="189" text-anchor="middle" class="well">A6</text>
+<circle cx="880" cy="184" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="880" y="189" text-anchor="middle" class="well">A7</text>
+<circle cx="996" cy="184" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="996" y="189" text-anchor="middle" class="well">A8</text>
+<text x="85" y="254" text-anchor="middle" class="axis">B</text>
+<circle cx="184" cy="248" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="184" y="253" text-anchor="middle" class="well">B1</text>
+<circle cx="300" cy="248" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="300" y="253" text-anchor="middle" class="well">B2</text>
+<circle cx="416" cy="248" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="416" y="253" text-anchor="middle" class="well">B3</text>
+<circle cx="532" cy="248" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="532" y="253" text-anchor="middle" class="well">B4</text>
+<circle cx="648" cy="248" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="648" y="253" text-anchor="middle" class="well">B5</text>
+<circle cx="764" cy="248" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="764" y="253" text-anchor="middle" class="well">B6</text>
+<circle cx="880" cy="248" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="880" y="253" text-anchor="middle" class="well">B7</text>
+<circle cx="996" cy="248" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="996" y="253" text-anchor="middle" class="well">B8</text>
+<text x="85" y="318" text-anchor="middle" class="axis">C</text>
+<circle cx="184" cy="312" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="184" y="317" text-anchor="middle" class="well">C1</text>
+<circle cx="300" cy="312" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="300" y="317" text-anchor="middle" class="well">C2</text>
+<circle cx="416" cy="312" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="416" y="317" text-anchor="middle" class="well">C3</text>
+<circle cx="532" cy="312" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="532" y="317" text-anchor="middle" class="well">C4</text>
+<circle cx="648" cy="312" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="648" y="317" text-anchor="middle" class="well">C5</text>
+<circle cx="764" cy="312" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="764" y="317" text-anchor="middle" class="well">C6</text>
+<circle cx="880" cy="312" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="880" y="317" text-anchor="middle" class="well">C7</text>
+<circle cx="996" cy="312" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="996" y="317" text-anchor="middle" class="well">C8</text>
+<text x="85" y="382" text-anchor="middle" class="axis">D</text>
+<circle cx="184" cy="376" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="184" y="381" text-anchor="middle" class="well">D1</text>
+<circle cx="300" cy="376" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="300" y="381" text-anchor="middle" class="well">D2</text>
+<circle cx="416" cy="376" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="416" y="381" text-anchor="middle" class="well">D3</text>
+<circle cx="532" cy="376" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="532" y="381" text-anchor="middle" class="well">D4</text>
+<circle cx="648" cy="376" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="648" y="381" text-anchor="middle" class="well">D5</text>
+<circle cx="764" cy="376" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="764" y="381" text-anchor="middle" class="well">D6</text>
+<circle cx="880" cy="376" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="880" y="381" text-anchor="middle" class="well">D7</text>
+<circle cx="996" cy="376" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="996" y="381" text-anchor="middle" class="well">D8</text>
+<text x="85" y="446" text-anchor="middle" class="axis">E</text>
+<circle cx="184" cy="440" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="184" y="445" text-anchor="middle" class="well">E1</text>
+<circle cx="300" cy="440" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="300" y="445" text-anchor="middle" class="well">E2</text>
+<circle cx="416" cy="440" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="416" y="445" text-anchor="middle" class="well">E3</text>
+<circle cx="532" cy="440" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="532" y="445" text-anchor="middle" class="well">E4</text>
+<circle cx="648" cy="440" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="648" y="445" text-anchor="middle" class="well">E5</text>
+<circle cx="764" cy="440" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="764" y="445" text-anchor="middle" class="well">E6</text>
+<circle cx="880" cy="440" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="880" y="445" text-anchor="middle" class="well">E7</text>
+<circle cx="996" cy="440" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="996" y="445" text-anchor="middle" class="well">E8</text>
+<text x="85" y="510" text-anchor="middle" class="axis">F</text>
+<circle cx="184" cy="504" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="184" y="509" text-anchor="middle" class="well">F1</text>
+<circle cx="300" cy="504" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="300" y="509" text-anchor="middle" class="well">F2</text>
+<circle cx="416" cy="504" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="416" y="509" text-anchor="middle" class="well">F3</text>
+<circle cx="532" cy="504" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="532" y="509" text-anchor="middle" class="well">F4</text>
+<circle cx="648" cy="504" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="648" y="509" text-anchor="middle" class="well">F5</text>
+<circle cx="764" cy="504" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="764" y="509" text-anchor="middle" class="well">F6</text>
+<circle cx="880" cy="504" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="880" y="509" text-anchor="middle" class="well">F7</text>
+<circle cx="996" cy="504" r="25" fill="#f3f8f7" stroke="#a9c2c4" stroke-width="1.5"/><text x="996" y="509" text-anchor="middle" class="well">F8</text>
+<text x="42" y="608" font-size="18" font-weight="700">CSV preview</text>
+<text x="1058" y="608" text-anchor="end" class="note">48 rows in download · All data cells are empty</text>
+<rect x="42" y="624" width="1016" height="144" rx="8" fill="#ffffff" stroke="#d4e1e2"/>
+<path d="M50 624 H1050 Q1058 624 1058 632 V660 H42 V632 Q42 624 50 624" fill="#e7f0ee"/>
+<text x="56" y="647" class="tablehead">Well</text>
+<text x="156" y="647" class="tablehead">Plasmid1</text>
+<line x1="142" y1="624" x2="142" y2="768" stroke="#d4e1e2"/>
+<text x="309" y="647" class="tablehead">Mass1 (ng)</text>
+<line x1="295" y1="624" x2="295" y2="768" stroke="#d4e1e2"/>
+<text x="462" y="647" class="tablehead">Plasmid2</text>
+<line x1="448" y1="624" x2="448" y2="768" stroke="#d4e1e2"/>
+<text x="615" y="647" class="tablehead">Mass2 (ng)</text>
+<line x1="601" y1="624" x2="601" y2="768" stroke="#d4e1e2"/>
+<text x="768" y="647" class="tablehead">Plasmid3</text>
+<line x1="754" y1="624" x2="754" y2="768" stroke="#d4e1e2"/>
+<text x="920" y="647" class="tablehead">Mass3 (ng)</text>
+<line x1="906" y1="624" x2="906" y2="768" stroke="#d4e1e2"/>
+<line x1="42" y1="660" x2="1058" y2="660" stroke="#d4e1e2"/>
+<text x="56" y="683" class="cell">A1</text>
+<line x1="42" y1="696" x2="1058" y2="696" stroke="#d4e1e2"/>
+<text x="56" y="719" class="cell">A2</text>
+<line x1="42" y1="732" x2="1058" y2="732" stroke="#d4e1e2"/>
+<text x="56" y="755" class="cell">…</text>
+<text x="42" y="800" class="note">Keep the Well column. Fill only the plasmid / mass pairs you plan to use; leave unused pairs blank.</text>
+</svg>
