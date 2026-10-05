@@ -469,7 +469,84 @@ def test_multiple_plates_require_manual_folder_for_download_and_switch_previews(
     picker.return_value = plates[:1]
     button(at, "Choose plate CSVs…").click().run()
     assert at.session_state.output_folder == str(tmp_path)
-    assert not at.selectbox
+    assert [widget.key for widget in at.selectbox] == ["plate_type"]
+
+
+def test_plate_type_defaults_each_session_without_persisting(monkeypatch, tmp_path):
+    at = start(monkeypatch, tmp_path, {"plate_type": 96})
+    assert at.selectbox(key="plate_type").value == 48
+    at.selectbox(key="plate_type").set_value(6).run()
+    assert not at.exception
+    at.number_input(key="LT1_final_volume_ul").set_value(30.0).run()
+    assert at.selectbox(key="plate_type").value == 6
+    assert "plate_type" not in sources.load_settings()
+    assert at.get("html")[0].proto.body.count('data-well="') == 6
+    fresh = AppTest.from_file(str(APP)).run()
+    assert not fresh.exception
+    assert fresh.selectbox(key="plate_type").value == 48
+
+
+def test_plate_type_change_revalidates_loaded_csv_and_invalidates_result(monkeypatch, tmp_path):
+    at, _ = connected(monkeypatch, tmp_path)
+    plate = tmp_path / "plate.csv"
+    plate.write_text("Well,Plasmid,Mass (ng)\nA1,Example_A,100\nC8,Example_A,100\n")
+    button(at, "Choose plate CSVs…").click().run()
+    button(at, "Generate LT1 Excel mix map").click().run()
+    assert "result" in at.session_state
+    original_plates = at.session_state.plates
+    at.selectbox(key="plate_type").set_value(6).run()
+    assert not at.exception
+    assert at.session_state.plates == original_plates
+    assert "result" not in at.session_state
+    assert not downloads(at)
+    assert button(at, "Generate LT1 Excel mix map").disabled
+    assert len(at.error) == 1
+    assert "C8" in at.error[0].value and "plate\\.csv" in at.error[0].value
+    at.selectbox(key="plate_type").set_value(96).run()
+    assert not at.error
+    assert not button(at, "Generate LT1 Excel mix map").disabled
+    button(at, "Generate LT1 Excel mix map").click().run()
+    assert not at.exception
+    assert at.session_state.result["artifacts"][0]["plate_type"] == 96
+    grid = next(table.value for table in at.dataframe if table.value.index.name == "Row")
+    assert list(grid.index) == list("ABCDEFGH")
+    assert list(grid.columns) == list(range(1, 13))
+
+
+def test_one_plate_type_applies_to_entire_batch(monkeypatch, tmp_path):
+    at, _ = connected(monkeypatch, tmp_path)
+    first, second = tmp_path / "first.csv", tmp_path / "second.csv"
+    first.write_text("Well,Plasmid,Mass (ng)\nB3,Example_A,100\nC8,,\nC8,,\n")
+    second.write_text("Well,Plasmid,Mass (ng)\nC8,Example_A,100\n")
+    monkeypatch.setattr(native_dialogs, "choose_plate_files", Mock(return_value=[str(first), str(second)]))
+    at.selectbox(key="plate_type").set_value(6).run()
+    button(at, "Choose plate CSVs…").click().run()
+    assert not at.exception
+    assert button(at, "Generate 2 LT1 Excel mix maps").disabled
+    assert "second\\.csv" in at.error[0].value
+    assert "first\\.csv" not in at.error[0].value
+    at.selectbox(key="plate_type").set_value(48).run()
+    button(at, "Generate 2 LT1 Excel mix maps").click().run()
+    assert not at.exception
+    assert not at.error
+    assert [artifact["plate_type"] for artifact in at.session_state.result["artifacts"]] == [48, 48]
+
+
+def test_valid_type_change_clears_results_and_dish_shows_a1(monkeypatch, tmp_path):
+    at, _ = connected(monkeypatch, tmp_path)
+    plate = tmp_path / "plate.csv"
+    plate.write_text("Well,Plasmid,Mass (ng)\nA1,Example_A,100\nH12,,\n")
+    button(at, "Choose plate CSVs…").click().run()
+    button(at, "Generate LT1 Excel mix map").click().run()
+    at.selectbox(key="plate_type").set_value(1).run()
+    assert not at.exception
+    assert not at.error
+    assert "result" not in at.session_state
+    assert not button(at, "Generate LT1 Excel mix map").disabled
+    assert 'class="tmm-dish-label" aria-hidden="true">A1</span>' in at.get("html")[0].proto.body
+    button(at, "Generate LT1 Excel mix map").click().run()
+    assert not at.exception
+    assert at.session_state.result["artifacts"][0]["plate_type"] == 1
 
 
 def test_five_plate_batch_downloads_individually_and_preview_switch_keeps_results(monkeypatch, tmp_path):

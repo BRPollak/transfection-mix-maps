@@ -34,7 +34,8 @@ def volumes(text):
 @pytest.mark.parametrize("reagent", ["LT1", "L2000"])
 def test_workbooks_keep_formula_like_and_numeric_identifiers_as_literal_text(tmp_path, reagent):
     names = ["=1+1", "=SUM(1,2)", "+1", "-1", "@SUM(1)", "00123", "NA", "None", "null", "nan"]
-    rows = [(f"A{index}", name, 100) for index, name in enumerate(names, 1)]
+    rows = [(f"{'A' if index < 8 else 'B'}{index % 8 + 1}", name, 100)
+            for index, name in enumerate(names)]
     plate = {"name": "=1+3.csv", "path": "=1+4", "bytes": csv_bytes(["Well", "Plasmid", "Mass (ng)"], rows)}
     sheet_label, source_label, timestamp = "=1+2", "=1+5", "=1+6"
     tables = {sheet_label: [["Plasmid", "Concentration"]] + [[name, 100] for name in names]}

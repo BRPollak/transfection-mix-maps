@@ -73,15 +73,16 @@ def test_plasmid_html_is_escaped_in_tooltips_and_accessible_labels():
     assert preview.wells["A1"]["aria-label"] == f"Well A1. {name}: 1.25 ng"
 
 
-def test_outside_wells_are_explicitly_reported_including_empty_wells():
+def test_96_preview_includes_full_geometry_and_ignores_outside_empty_wells():
     long = pd.DataFrame({"Well": ["G1", "A9", "A1"], "Plasmid": ["A", "B", "C"], "Mass_ng": [1, 2, 3]})
     wells = pd.DataFrame({"Well": ["G1", "A9", "A1", "AA1", "AB1", "H12"]})
-    html = plate_preview_html(long, wells)
+    html = plate_preview_html(long, wells, plate_type=96)
     preview = PreviewParser(html)
-    assert "This preview shows A1–F8 only." in html
-    assert "Wells outside this view: A9, G1, H12, AA1, AB1." in html
-    assert len(preview.wells) == 48
+    assert "Wells outside" not in html
+    assert len(preview.wells) == 96
     assert "tmm-well-filled" in preview.wells["A1"]["class"]
+    assert "tmm-well-filled" in preview.wells["G1"]["class"]
+    assert "tmm-well-empty" in preview.wells["H12"]["class"]
 
 
 @pytest.mark.parametrize("count", [2, 3, 4, 5])
@@ -117,12 +118,13 @@ def test_preview_symbols_match_l2000_workbook_for_every_mass_group(tmp_path, cou
 
 
 def test_group_numbers_use_all_wells_and_are_stable_when_input_is_shuffled():
-    long = pd.DataFrame({"Well": ["AA1", "Z1", "A10", "B1", "a02", "B2", "C3", "C1", "C2"],
+    long = pd.DataFrame({"Well": ["H1", "G1", "A10", "B1", "a02", "B2", "C3", "C1", "C2"],
                          "Plasmid": ["A"] * 9,
                          "Mass_ng": [400, 500, 100, 100, 200, 200, 300, 300, 300]})
-    expected = {"C1": "1", "C2": "1", "C3": "1", "A2": "2", "B2": "2", "B1": "3"}
+    expected = {"C1": "1", "C2": "1", "C3": "1", "A2": "2", "B2": "2", "B1": "3",
+                "A10": "3", "G1": "4", "H1": "5"}
     for entries in (long, long.sample(frac=1, random_state=3)):
-        html = plate_preview_html(entries)
+        html = plate_preview_html(entries, plate_type=96)
         preview = PreviewParser(html)
         actual = {well: attrs["data-mass-group"] for well, attrs in preview.wells.items()
                   if "data-mass-group" in attrs}
@@ -132,15 +134,35 @@ def test_group_numbers_use_all_wells_and_are_stable_when_input_is_shuffled():
         assert "Bulk transfectant mix 5 · 400 ng DNA/well · 1 well" in html
 
 
-def test_off_grid_mass_sets_affect_visible_marker_and_legend():
+def test_96_mass_groups_span_both_halves_of_the_plate():
     long = pd.DataFrame({"Well": ["A9", "G1", "A1"], "Plasmid": ["A"] * 3,
                          "Mass_ng": [100, 100, 200]})
-    html = plate_preview_html(long)
+    html = plate_preview_html(long, plate_type=96)
     preview = PreviewParser(html)
     assert preview.wells["A1"]["data-mass-group"] == "2"
     assert "Bulk transfectant mix 2 (●)" in preview.wells["A1"]["aria-label"]
     assert "Bulk transfectant mix 1 · 100 ng DNA/well · 2 wells" in html
-    assert len(preview.with_class("tmm-well-marker")) == 1
+    assert len(preview.with_class("tmm-well-marker")) == 3
+
+
+@pytest.mark.parametrize("plate_type,rows,columns", [
+    (96, "ABCDEFGH", 12), (48, "ABCDEF", 8), (24, "ABCD", 6),
+    (12, "ABC", 4), (6, "AB", 3), (1, "A", 1),
+])
+def test_selected_preview_has_exact_geometry_even_without_data(plate_type, rows, columns):
+    html = plate_preview_html(plate_type=plate_type)
+    preview = PreviewParser(html)
+    assert list(preview.wells) == [f"{row}{col}" for row in rows for col in range(1, columns + 1)]
+    assert f"--tmm-columns:{columns};" in html
+    if plate_type == 1:
+        assert '<span class="tmm-dish-label">A1</span>' in html
+        assert preview.wells["A1"]["aria-label"] == "Well A1. No DNA"
+
+
+def test_preview_cannot_silently_hide_unsupported_positive_dna():
+    long = pd.DataFrame({"Well": ["C8"], "Plasmid": ["A"], "Mass_ng": [100]})
+    with pytest.raises(ValueError, match="C8.*6-well.*A1–B3"):
+        plate_preview_html(long, plate_type=6)
 
 
 def test_decimal_equal_totals_share_markers_but_close_totals_remain_distinct():

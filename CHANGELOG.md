@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.0.1 — October 4, 2026
+
+Source update. No v1.0.1 installer has been built or published; the available
+installer remains v1.0.0.
+
+- Add one required plate type for the whole batch: 96-well (8 × 12), 48-well
+  (6 × 8), 24-well (4 × 6), 12-well (3 × 4), 6-well (2 × 3), and single well
+  (dish, A1). Start each new app session at 48-well without saving this selection
+  in preferences. Type changes retain CSVs, revalidate them, and clear results.
+- Keep wide and long CSV schemas and normalized well names. Ignore unsupported
+  wells with blank or valid-zero DNA entries, including duplicate unused rows;
+  report source rows with positive DNA outside the selected geometry. Preserve
+  malformed-input checks and require positive DNA to generate recipes.
+- Show the complete selected geometry in previews and workbook maps. Split
+  96-well output into independently printable Mix Map (A-D) and Mix Map (E-H)
+  tabs. Repeat instructions and whole-plate recipes on both tabs, with consistent
+  symbols and a reminder to prepare each bulk recipe once for the whole plate.
+- Record plate type and geometry in artifact metadata and Run config; include
+  plate type in result invalidation. Retain reagent calculations, overages,
+  supporting sheets, and explicit Generate/Download behavior.
+- Set source, launcher fallback, and project versions to 1.0.1; package the shared
+  plate-format module in future builds. Leave the v1.0.0 installer link available.
+
 ## 1.0.0 — October 4, 2026
 
 - Generate mix maps in memory and save each workbook only when Download is

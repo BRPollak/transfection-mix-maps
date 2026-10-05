@@ -16,6 +16,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 import core
+from plate_formats import get_plate_format
 from sources import LOCAL_ZONE, now_iso, read_plate
 
 DEFAULT_CONFIGS = {
@@ -39,17 +40,13 @@ def default_configs():
     return deepcopy(DEFAULT_CONFIGS)
 
 
-def _prepare_plate(plate, tables, reagent, configs, run_warnings):
+def _prepare_plate(plate, tables, reagent, configs, run_warnings, plate_type):
     plate_bytes = plate["bytes"]
     plate_name = Path(plate["name"]).name
     warnings = list(run_warnings)
-    wells, long, parsing_warnings = core.standardize_plate_csv(read_plate(plate_bytes))
+    wells, long, parsing_warnings = core.standardize_plate_csv(
+        read_plate(plate_bytes), plate_type=plate_type)
     warnings.extend(parsing_warnings)
-    # Avoid accidental enormous grids caused by mistyped well coordinates.
-    rows = max(core.row_sort_key(r) for r in wells["Row"])
-    if rows > 64 or wells["Col"].max() > 96:
-        raise core.MixMapError("The plate extends beyond 64 rows or 96 columns",
-                               fixes=["Check the Well column for a mistyped plate position."])
     used = sorted(set(long["Plasmid"].map(core.clean_cell)))
     concentrations, lookup, concentration_warnings = core.load_plasmid_concentrations(
         tables, duplicate_policy="error", used_plasmids=used)
@@ -68,11 +65,12 @@ def _prepare_plate(plate, tables, reagent, configs, run_warnings):
     return result
 
 
-def _workbook_bytes(plate, reagent, configs, source_label, source_timestamp, source_hash):
+def _workbook_bytes(plate, reagent, configs, source_label, source_timestamp, source_hash, plate_type):
     stream = BytesIO()
     core.write_mix_map_workbook(
         stream, plate["plate_name"], source_label, reagent, configs[reagent],
-        plate["details"], plate["summary"], plate["bulk"], plate["concentrations"], plate["warnings"])
+        plate["details"], plate["summary"], plate["bulk"], plate["concentrations"], plate["warnings"],
+        plate_type=plate_type)
     # Keep provenance inside each workbook; no sidecar file is created.
     stream.seek(0)
     wb = load_workbook(stream, rich_text=True)
@@ -98,7 +96,7 @@ def _workbook_bytes(plate, reagent, configs, source_label, source_timestamp, sou
     return final.getvalue()
 
 
-def generate_batch(plates, tables, source_label, source_timestamp, reagents, configs):
+def generate_batch(plates, tables, source_label, source_timestamp, reagents, configs, *, plate_type=48):
     """Generate one in-memory workbook per plate without an output folder.
 
     ``plates`` contains one to five dictionaries with ``name`` and ``bytes``;
@@ -106,6 +104,10 @@ def generate_batch(plates, tables, source_label, source_timestamp, reagents, con
     workbooks. Only ``save_artifact`` publishes an artifact to the filesystem.
     """
     started = time.perf_counter()
+    try:
+        plate_format = get_plate_format(plate_type)
+    except ValueError as exc:
+        raise core.MixMapError("Choose a supported plate type", fixes=[str(exc)]) from exc
     if not isinstance(plates, (list, tuple)) or not 1 <= len(plates) <= 5:
         raise core.MixMapError(
             "Choose between 1 and 5 plate CSV files",
@@ -128,9 +130,14 @@ def generate_batch(plates, tables, source_label, source_timestamp, reagents, con
                 fixes=["Choose the plate CSV files again."],
             )
         try:
-            prepared.append(_prepare_plate(plate, tables, reagent, configs, run_warnings))
+            prepared.append(_prepare_plate(plate, tables, reagent, configs, run_warnings, plate_type))
         except core.MixMapError as exc:
             if len(plates) == 1:
+                if exc.title == "DNA is assigned outside the selected plate type":
+                    filename = Path(plate["name"]).name
+                    raise core.MixMapError(
+                        exc.title, details=[f"{filename}: {detail}" for detail in exc.details],
+                        fixes=exc.fixes) from exc
                 raise
             label = f"{Path(plate['name']).name} (plate {index})"
             problems.append(f"{label}: {exc.title}")
@@ -147,8 +154,10 @@ def generate_batch(plates, tables, source_label, source_timestamp, reagents, con
         filename = f"{plate['stem']}_{reagent}_print_mixmap_{stamp}_{uuid.uuid4().hex[:8]}.xlsx"
         artifact = {"name": filename,
                     "bytes": _workbook_bytes(plate, reagent, configs, source_label,
-                                             source_timestamp, source_hash),
+                                             source_timestamp, source_hash, plate_type),
                     "plate_name": plate["plate_name"], "reagent": reagent,
+                    "plate_type": plate_type, "plate_rows": list(plate_format.rows),
+                    "plate_columns": list(plate_format.columns),
                     "summary": plate["summary"], "details": plate["details"], "bulk": plate["bulk"]}
         if "plate_path" in plate:
             artifact["plate_path"] = plate["plate_path"]
@@ -159,6 +168,8 @@ def generate_batch(plates, tables, source_label, source_timestamp, reagents, con
         label = f"{plate['plate_name']} (plate {index}): " if len(prepared) > 1 else ""
         all_warnings.extend(label + warning for warning in plate["warnings"])
     return {"artifacts": artifacts, "plate_count": len(prepared),
+            "plate_type": plate_type, "plate_rows": list(plate_format.rows),
+            "plate_columns": list(plate_format.columns),
             "warnings": core.dedupe_messages(all_warnings),
             "wells": sum(plate["wells"] for plate in prepared),
             "entries": sum(plate["entries"] for plate in prepared),
@@ -168,10 +179,10 @@ def generate_batch(plates, tables, source_label, source_timestamp, reagents, con
 
 
 def generate(plate_bytes, plate_name, tables, source_label, source_timestamp,
-             reagents, configs):
+             reagents, configs, *, plate_type=48):
     """Compatibility wrapper for generating one plate workbook."""
     return generate_batch([{"name": str(plate_name), "bytes": plate_bytes}], tables, source_label,
-                          source_timestamp, reagents, configs)
+                          source_timestamp, reagents, configs, plate_type=plate_type)
 
 
 def save_artifact(artifact, output_dir):

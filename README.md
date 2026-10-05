@@ -1,13 +1,16 @@
-# Transfection Mix Maps · v1.0.0
+# Transfection Mix Maps · v1.0.1
 
 Create Excel transfection mix maps for **LT1** or **L2000** from plate-layout
 CSVs and DNA concentrations in Google Sheets. Preview up to five plates and
 save a separate workbook for each one.
 
-For **Apple Silicon Macs running macOS 14 or later**. Python and all dependencies
-are included.
+**v1.0.1 is a source update.** No v1.0.1 installer has been built or published.
+Run this version using [BUILDING.md](BUILDING.md). The currently published
+installer is **v1.0.0**, for Apple Silicon Macs running macOS 14 or later, and
+includes Python and all dependencies. It does not include the plate-type
+features described below.
 
-## Install or update
+## Install or update the published v1.0.0 app
 
 1. [Download the v1.0.0 installer](https://github.com/BRPollak/transfection-mix-maps/releases/download/v1.0.0/Transfection-Mix-Maps-1.0.0-arm64.pkg).
 2. Quit **Transfection Mix Maps** if it is running.
@@ -55,6 +58,30 @@ no conflicting entries. Unused stocks do not need concentrations.
 Your **plate CSV** can use either format. Use plasmid names that match the Sheet,
 well names such as `A1`, and nonnegative DNA masses in ng.
 
+Choose a **Plate type** for the entire batch before choosing CSVs:
+
+| Plate type | Rows × columns | Supported wells |
+|---|---:|---|
+| 96-well | 8 × 12 | A1–H12 |
+| 48-well | 6 × 8 | A1–F8 |
+| 24-well | 4 × 6 | A1–D6 |
+| 12-well | 3 × 4 | A1–C4 |
+| 6-well | 2 × 3 | A1–B3 |
+| Single well (dish) | 1 × 1 | A1 |
+
+The app starts at **48-well** in each new session. Your selection is retained
+within that session but is not saved with preferences. Coordinates are normalized
+(for example, `a01` becomes `A1`), but wells are never renumbered for a different
+plate type.
+
+You may keep unused template rows for unsupported wells. Blank or valid-zero
+DNA entries in those wells are ignored, including repeated unused rows. Positive
+DNA mass in an unsupported well blocks the batch and identifies the filename,
+CSV row, well, and allowed range. For example, `C8` with positive DNA mass is
+invalid for a 6-well plate. Malformed wells, invalid masses, and incomplete DNA
+entries still need correction. A layout must contain positive DNA mass to
+generate a recipe.
+
 **Wide format:** one row per well, with numbered plasmid/mass pairs.
 
 ```csv
@@ -75,7 +102,8 @@ A2,Plasmid A,150
 ## Generate and save
 
 1. Confirm your Google Sheet and refresh its concentrations when needed.
-2. Press **Choose plate CSVs…** and select one to five files. Use Command-click
+2. Select **Plate type**, then press **Choose plate CSVs…** and select one to five
+   files. The same plate type applies to every selected CSV. Use Command-click
    or Shift-click for multiple files. Switch the preview's filename dropdown to
    inspect each plate; hover over a populated well to see its DNA contents.
 3. Choose **LT1** or **L2000** and review the reagent settings. The same settings
@@ -89,12 +117,15 @@ A2,Plasmid A,150
    to preserve existing files.
 
 You can choose or change the save folder after generating. Download is available
-once a folder is selected. Changing plate files, concentrations, or reagent
-settings requires generating again. If validation fails, correct the listed
-inputs and retry; the batch produces no workbooks until all plates pass.
+once a folder is selected. Changing plate type, plate files, concentrations, or
+reagent settings requires generating again. Changing plate type retains your
+chosen CSVs and immediately checks them against the new geometry. If validation
+fails, correct the listed inputs and retry; the batch produces no workbooks until
+all plates pass.
 
-The preview shows wells A1–F8. Any wells outside that view are listed and remain
-included in the workbook. Select your plate CSVs again when reopening the app.
+The preview shows the complete selected plate, including a single `A1` for a
+dish and one 8 × 12 grid for a 96-well plate. Select your plate CSVs again when
+reopening the app.
 
 ## Read the mix map
 
@@ -107,6 +138,15 @@ For multiple L2000 mixes, symbols **▲ ● ■ ◆ ★** connect each recipe to
 in the preview and workbook. Single-mix plates need no symbol. Follow the
 workbook's **Mix Map** and **Bulk transfectant mixes** sheets for amounts and
 well assignments.
+
+Each **Mix Map** uses the selected plate geometry and prints on one landscape
+Letter page. A 96-well workbook instead has two printable map tabs:
+**Mix Map (A-D)** for the top half and **Mix Map (E-H)** for the bottom half.
+Both tabs are included even if one half is empty. They repeat the preparation
+instructions and full-plate recipes; **prepare each whole-plate bulk recipe
+once**, then use its assigned aliquots across both halves. Recipe symbols and
+amounts are consistent across the two tabs. All supporting sheets remain
+available for the complete plate.
 
 Preparation volumes include overage for pipetting loss. Deliver only the
 configured **Final volume to be delivered to each well**. The well overage factor

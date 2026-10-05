@@ -382,13 +382,13 @@ def test_batch_generation_failure_never_writes_a_workbook(tmp_path, monkeypatch)
     real_write = core.write_mix_map_workbook
     writes = []
 
-    def fail_second_write(stream, *args):
+    def fail_second_write(stream, *args, **kwargs):
         assert isinstance(stream, BytesIO)
         writes.append(stream)
         if len(writes) == 2:
             stream.write(b"partial")
             raise OSError("second workbook could not be generated")
-        return real_write(stream, *args)
+        return real_write(stream, *args, **kwargs)
 
     monkeypatch.setattr(core, "write_mix_map_workbook", fail_second_write)
     with pytest.raises(OSError, match="second workbook"):

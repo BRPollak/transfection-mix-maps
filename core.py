@@ -19,6 +19,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.properties import PageSetupProperties
 
+from plate_formats import get_plate_format
+
 class MixMapError(Exception):
     def __init__(self, title, details=None, fixes=None):
         super().__init__(title)
@@ -577,7 +579,13 @@ def detect_long_columns(columns):
     return None
 
 
-def standardize_plate_csv(raw_df):
+def standardize_plate_csv(raw_df, *, plate_type=None):
+    """Read DNA entries, optionally enforcing the selected physical plate layout.
+
+    ``None`` retains unrestricted coordinates for internal calculation callers.
+    Empty and valid-zero template wells outside an explicit format are ignored.
+    """
+    plate_format = get_plate_format(plate_type) if plate_type is not None else None
     warnings = []
     if raw_df.empty:
         raise MixMapError(
@@ -598,6 +606,7 @@ def standardize_plate_csv(raw_df):
     seen_wells = set()
     well_occurrences = {}
     canonical_wells = []
+    supported_wells = set()
     for csv_row_index, value in raw_df[well_col].items():
         well = clean_cell(value)
         if not well:
@@ -606,14 +615,16 @@ def standardize_plate_csv(raw_df):
         row_label, col_index = parse_well_or_raise(well, csv_row=int(csv_row_index) + 2, column_name=well_col)
         well = f"{row_label}{col_index}"
         canonical_wells.append(well)
-        well_occurrences.setdefault(well, []).append(int(csv_row_index) + 2)
-        if well not in seen_wells:
-            seen_wells.add(well)
-            well_records.append({"Well": well, "Row": row_label, "Col": col_index})
+        seen_wells.add(well)
+        if plate_format is None or plate_format.contains(row_label, col_index):
+            well_occurrences.setdefault(well, []).append(int(csv_row_index) + 2)
+            if well not in supported_wells:
+                supported_wells.add(well)
+                well_records.append({"Well": well, "Row": row_label, "Col": col_index})
     raw_df = raw_df.copy()
     raw_df[well_col] = canonical_wells
 
-    if not well_records:
+    if not seen_wells:
         raise MixMapError(
             "No valid wells were found in the CSV",
             details=[f"Well column: {well_col}"],
@@ -622,6 +633,7 @@ def standardize_plate_csv(raw_df):
 
     wide_pairs = detect_wide_pairs(raw_df.columns)
     long_records = []
+    outside_entries = []
 
     if wide_pairs:
         for _, _, mass_col in wide_pairs:
@@ -674,7 +686,11 @@ def standardize_plate_csv(raw_df):
                         fixes=["Mass values must be zero or positive; correct the CSV and rerun."],
                     )
                 if mass_ng == 0:
-                    warnings.append(f"CSV row {int(csv_row_index) + 2}, well {well}, plasmid {plasmid!r} has 0 ng and was skipped.")
+                    if well in supported_wells:
+                        warnings.append(f"CSV row {int(csv_row_index) + 2}, well {well}, plasmid {plasmid!r} has 0 ng and was skipped.")
+                    continue
+                if well not in supported_wells:
+                    outside_entries.append((int(csv_row_index) + 2, well))
                     continue
                 long_records.append(
                     {
@@ -713,6 +729,8 @@ def standardize_plate_csv(raw_df):
                     details=[f"CSV row {row_num}: plasmid={plasmid!r}, mass={raw_mass!r}"],
                     fixes=["Fill the Well column for every plasmid/mass row."],
                 )
+            if not plasmid and not raw_mass:
+                continue
             if not plasmid:
                 raise MixMapError(
                     "Missing plasmid name in long-format CSV",
@@ -732,7 +750,11 @@ def standardize_plate_csv(raw_df):
                     fixes=["Mass values must be zero or positive; correct the CSV and rerun."],
                 )
             if mass_ng == 0:
-                warnings.append(f"CSV row {row_num}, well {well}, plasmid {plasmid!r} has 0 ng and was skipped.")
+                if well in supported_wells:
+                    warnings.append(f"CSV row {row_num}, well {well}, plasmid {plasmid!r} has 0 ng and was skipped.")
+                continue
+            if well not in supported_wells:
+                outside_entries.append((row_num, well))
                 continue
             slot_counter[well] = slot_counter.get(well, 0) + 1
             long_records.append(
@@ -745,7 +767,17 @@ def standardize_plate_csv(raw_df):
                 }
             )
 
-    wells_df = pd.DataFrame(well_records).drop_duplicates("Well")
+    if outside_entries:
+        raise MixMapError(
+            "DNA is assigned outside the selected plate type",
+            details=dedupe_messages([
+                f"CSV row {row_num}, well {well} contains positive DNA mass; "
+                f"the selected {plate_format.label} plate allows {plate_format.well_range}."
+                for row_num, well in outside_entries
+            ]),
+            fixes=["Choose the correct plate type, or move/remove DNA assigned to unsupported wells."],
+        )
+    wells_df = pd.DataFrame(well_records, columns=["Well", "Row", "Col"]).drop_duplicates("Well")
     long_df = pd.DataFrame(long_records)
     if long_df.empty:
         raise MixMapError(
@@ -1254,27 +1286,29 @@ def write_bulk_mixes_sheet(wb, bulk, config):
         ws.column_dimensions[column].width = 30
 
 
-def write_mix_map_workbook(
-    output_path,
+def write_mix_map_sheet(
+    ws,
     csv_name,
     spreadsheet_id,
-    config_name,
     config,
     details,
     summary,
     bulk,
-    concentrations_df,
-    case_warnings=None,
+    case_warnings,
+    plate_format,
+    rows,
 ):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Mix Map"
-
-    rows = contiguous_rows(summary["Row"].tolist())
-    # Even a sparse plate needs enough printable width for preparation notes.
-    cols = list(range(1, max(8, int(summary["Col"].max())) + 1))
+    """Render a complete plate or one printable half without recalculating recipes."""
+    cols = plate_format.columns
     start_col = 2
-    last_col = start_col + len(cols) - 1
+    # Excel may clip a single column wider than the printable page even with
+    # fit-to-page enabled. Keep the dish as one physical well by merging eight
+    # ordinary-width worksheet columns for its header and recipe cell.
+    column_span = 8 if plate_format.well_count == 1 else 1
+    last_col = start_col + len(cols) * column_span - 1
+    # Preserve the 48-well map's width, spreading it over fewer actual wells
+    # for small plates so the title and preparation notes remain printable.
+    well_col_width = (190 if len(cols) == 12 else 176) / len(cols)
 
     title_fill = PatternFill("solid", fgColor="FFFFFF")
     header_fill = PatternFill("solid", fgColor="D9EAF7")
@@ -1291,6 +1325,8 @@ def write_mix_map_workbook(
     empty_font = Font(name="Arial", size=8, color="9AA0A6")
 
     title = f"{Path(csv_name).stem} - {config['display_name']} print mix map"
+    if plate_format.well_count == 96:
+        title += f" - Rows {rows[0]}-{rows[-1]}"
     write_merged_note(
         ws,
         1,
@@ -1305,6 +1341,7 @@ def write_mix_map_workbook(
         ws,
         2,
         last_col,
+        f"{plate_format.label} ({plate_format.well_range}) | "
         f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')} | Concentration source: {spreadsheet_id}",
         title_fill,
         subtitle_font,
@@ -1331,6 +1368,11 @@ def write_mix_map_workbook(
         )
     notes.append(f"Deliver {format_volume_ul(config['final_volume_ul'])} to each DNA-containing well. "
                  f"Preparation volumes include well overage x{config['well_overage_factor']:g} for pipetting loss.")
+    if plate_format.well_count == 96 and bulk.get("mixes"):
+        notes.append(
+            "Whole-plate totals: prepare each bulk recipe once for the entire plate. "
+            "The same recipes are repeated on both printable halves."
+        )
     for mix in bulk.get("mixes", []):
         label = f"{mix['Mix']} {mix.get('Symbol', '')}".rstrip()
         notes.append(f"{label} | {mix['Total DNA_ng']:.12g} ng DNA/well | "
@@ -1359,11 +1401,15 @@ def write_mix_map_workbook(
     corner.border = plate_border(1, 1, max(len(rows), 1), max(len(cols), 1))
 
     for col_pos, col_num in enumerate(cols, start=1):
-        cell = ws.cell(start_row, start_col + col_pos - 1, col_num)
+        sheet_col = start_col + (col_pos - 1) * column_span
+        cell = ws.cell(start_row, sheet_col, col_num)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="center", vertical="center")
         cell.border = plate_border(1, col_pos, max(len(rows), 1), len(cols))
+        if column_span > 1:
+            ws.merge_cells(start_row=start_row, start_column=sheet_col,
+                           end_row=start_row, end_column=sheet_col + column_span - 1)
     ws.row_dimensions[start_row].height = 21
 
     summary_lookup = {(row["Row"], int(row["Col"])): row for _, row in summary.iterrows()}
@@ -1380,12 +1426,17 @@ def write_mix_map_workbook(
         for col_pos, col_num in enumerate(cols, start=1):
             summary_row = summary_lookup.get((row_label, col_num))
             lines = format_well_mix_lines(summary_row, details, config) if summary_row is not None else []
-            max_lines = max(max_lines, len(lines) or 1)
-            value = "\n".join(lines)
+            # Account for automatic wrapping, especially the narrower 96-well
+            # columns. The estimate includes space for the cell's padding.
+            chars_per_line = max(1, int((well_col_width * 7 - 8) / (well_font_size * 0.7)))
+            wrapped_lines = sum(max(1, math.ceil(len(line) / chars_per_line)) for line in lines)
+            max_lines = max(max_lines, wrapped_lines or 1)
+            value = "\n".join(lines) if lines else ("A1" if plate_format.well_count == 1 else "")
             if lines and config.get("mode") == "two_tube" and summary_row.get("Bulk mix symbol"):
                 value = CellRichText("\n".join(lines[:-1]) + "\n", TextBlock(symbol_font, lines[-1]))
                 symbol_rows.add(row_label)
-            cell = ws.cell(sheet_row, start_col + col_pos - 1, value)
+            sheet_col = start_col + (col_pos - 1) * column_span
+            cell = ws.cell(sheet_row, sheet_col, value)
             cell.alignment = Alignment(wrap_text=True, horizontal="left", vertical="top")
             cell.border = plate_border(row_pos, col_pos, len(rows), len(cols))
             if lines:
@@ -1394,12 +1445,14 @@ def write_mix_map_workbook(
             else:
                 cell.fill = empty_fill
                 cell.font = empty_font
+            if column_span > 1:
+                ws.merge_cells(start_row=sheet_row, start_column=sheet_col,
+                               end_row=sheet_row, end_column=sheet_col + column_span - 1)
         max_lines_by_row[row_label] = max_lines
 
     ws.column_dimensions["A"].width = 4.5
-    well_col_width = min(22, max(14, 190 / max(len(cols), 1)))
-    for j in range(start_col, start_col + len(cols)):
-        ws.column_dimensions[get_column_letter(j)].width = well_col_width
+    for j in range(start_col, last_col + 1):
+        ws.column_dimensions[get_column_letter(j)].width = well_col_width / column_span
     for row_pos, row_label in enumerate(rows, start=1):
         sheet_row = start_row + row_pos
         line_count = max_lines_by_row.get(row_label, 1)
@@ -1410,6 +1463,31 @@ def write_mix_map_workbook(
     last_grid_row = start_row + len(rows)
     ws.freeze_panes = ws.cell(start_row + 1, start_col).coordinate
     apply_print_settings(ws, last_col, last_grid_row)
+
+
+def write_mix_map_workbook(
+    output_path,
+    csv_name,
+    spreadsheet_id,
+    config_name,
+    config,
+    details,
+    summary,
+    bulk,
+    concentrations_df,
+    case_warnings=None,
+    *,
+    plate_type=48,
+):
+    plate_format = get_plate_format(plate_type)
+    wb = Workbook()
+    for index, (sheet_name, rows) in enumerate(plate_format.map_sections):
+        ws = wb.active if index == 0 else wb.create_sheet()
+        ws.title = sheet_name
+        write_mix_map_sheet(
+            ws, csv_name, spreadsheet_id, config, details, summary, bulk,
+            case_warnings, plate_format, rows,
+        )
 
     if bulk:
         write_bulk_mixes_sheet(wb, bulk, config)
@@ -1475,7 +1553,15 @@ def write_mix_map_workbook(
         {"Setting": "Ratio_uL_per_ug", "Value": config["dna_to_reagent_ratio_ul_per_ug"]},
         {"Setting": "Well overage factor", "Value": config["well_overage_factor"]},
         {"Setting": "Bulk overage factor", "Value": config.get("bulk_overage_factor", 1.0)},
-        {"Setting": "Print layout", "Value": "Letter landscape, fit to one page"},
+        {"Setting": "Plate type", "Value": plate_format.label},
+        {"Setting": "Plate wells", "Value": plate_format.well_count},
+        {"Setting": "Plate rows", "Value": ", ".join(plate_format.rows)},
+        {"Setting": "Plate columns", "Value": len(plate_format.columns)},
+        {"Setting": "Plate well range", "Value": plate_format.well_range},
+        {"Setting": "Print layout", "Value": (
+            "Letter landscape, one page per half (A-D and E-H)"
+            if plate_format.well_count == 96 else "Letter landscape, fit to one page"
+        )},
         {"Setting": "Map cell format", "Value": "Well label first, then volume-first pipetting lines"},
     ]
     for warning in case_warnings or []:

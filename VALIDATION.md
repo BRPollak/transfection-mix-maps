@@ -1,4 +1,62 @@
-# v1.0.0 verification
+# v1.0.1 source verification
+
+Verified October 4, 2026. This is a tested source update; no v1.0.1 installer
+was built, installed, or published.
+
+## Automated checks
+
+- `.venv/bin/python -m pytest -q`: **373 tests passed**.
+- `UV_CACHE_DIR=/private/tmp/mixmap-v101-uv-cache uv lock --check --offline`:
+  passed; dependency versions are unchanged.
+- `git diff --check`: passed.
+- App, project, lockfile, and native launcher fallback report **1.0.1**.
+  The package manifest includes the shared plate-format definitions.
+
+Coverage includes all six geometries and their row/column boundaries in wide
+and long CSVs, canonical well names, blank/zero unsupported wells and duplicate
+unused template rows, retained malformed-input checks, and complete batch
+rejection for unsupported positive DNA. UI checks cover the fresh-session
+48-well default, session-only plate type, revalidation of retained CSVs, stale
+result removal, and full-sized preview/result grids.
+
+Workbook checks cover exact physical well positions, both 96-well map tabs even
+when one half is empty, shared whole-plate recipes and symbols, print settings,
+geometry provenance, merged dish cells, literal source text, and unchanged
+LT1/L2000 calculation and Generate/Download behavior.
+
+## Native Excel print checks
+
+Generated synthetic two-plasmid fixtures for each format. Opened and exported
+the following maps through Microsoft Excel's native Print / Save as PDF dialog,
+then rendered the PDFs with Poppler and inspected them:
+
+- Dense 96-well L2000 maps, both A-D and E-H, with five DNA-mass groups and long
+  plasmid names; each half is one landscape Letter page with the same whole-plate
+  recipes and clear prepare-once instructions.
+- Dense 96-well LT1 top half, with readable wrapped component lines.
+- Six-well L2000 map with five groups and preparation warnings.
+- Single-well LT1 and L2000 maps, with one labeled A1 recipe.
+
+The initial dish layout exposed Excel clipping an oversized single column.
+The final layout merges normal-width columns into one well; fresh native PDF
+exports confirmed the complete title, instructions, recipe, and borders print.
+Regression tests cover that structure for both reagents.
+
+Synthetic fixtures and local visual evidence are retained in the ignored
+`build/v1.0.1/visual-checks/` directory. The final dish evidence uses the
+`plate-1-LT1-fixed` and `plate-1-L2000-fixed` filenames; the earlier dish PDF
+records the issue found during verification.
+
+## Verification limits
+
+No physical printouts, live Google authorization, real CSV/folder picker flow,
+or installer upgrade was tested for v1.0.1. Automated UI tests simulate Google
+access and native choices. Interactive previews are covered by HTML and
+Streamlit tests; a browser visual check was not completed. Native print review
+sampled the formats listed above; all supported geometries have structural
+workbook tests.
+
+# v1.0.0 verification (historical)
 
 Verified October 4, 2026. The source baseline is GitHub's merged v0.3
 (`66712f2` on `main`).
