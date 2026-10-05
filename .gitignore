@@ -33,3 +33,6 @@ swift-module-cache/
 *.pkg.sha256
 *.zip
 *.xlsx
+
+# The sanitized starter workbook is an intentional downloadable resource.
+!examples/google-sheets-stocks-template.xlsx
