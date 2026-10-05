@@ -28,13 +28,16 @@ Set up a Google connection once on each Mac:
 
 1. In [Google Cloud Console](https://console.cloud.google.com/), select or create
    a project and enable **Google Sheets API**.
-2. Configure **Google Auth Platform / OAuth consent**. If the app is in Testing,
-   add your Google account as a test user.
+2. Configure **Google Auth Platform / OAuth consent**. Open **Google Auth
+   Platform → Audience**. If you see **Test users**, click **Add users**, enter
+   the email address of the Google account you will use with Transfection Mix
+   Maps, then click **Save**. This allows that account to sign in.
 3. Create an **OAuth client ID** with application type **Desktop app**, then
    download its JSON file.
 4. In the app, expand **One-time Google setup**, choose the JSON file under
    **Google desktop client file (.json)**, and press **Save Google client file**.
-5. Press **Sign in to Google** and use an account that can read your Sheet.
+5. Press **Sign in to Google** and use the account added in step 2, if applicable.
+   That account must also own the Sheet or have been given access by its owner.
 6. Paste the **Google Sheet URL or ID**, then press
    **Confirm Sheet & refresh concentrations**.
 
@@ -116,5 +119,10 @@ The app runs locally. Google sign-in and refreshing concentrations require
 internet access. Private settings and credentials are stored in
 `~/Library/Application Support/Transfection Mix Maps/local_state/`.
 
-See [BUILDING.md](BUILDING.md) for source and build instructions, and
-[VALIDATION.md](VALIDATION.md) for verification details.
+See [BUILDING.md](BUILDING.md) for source and build instructions.
+
+## License
+
+Transfection Mix Maps is licensed under the [MIT License](LICENSE).
+Bundled Python and third-party dependencies retain their own licenses; the Mac
+app includes their notices in `Contents/Resources/THIRD_PARTY_NOTICES.txt`.
