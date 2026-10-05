@@ -73,8 +73,8 @@ def test_workbooks_keep_formula_like_and_numeric_identifiers_as_literal_text(tmp
         workbook.close()
 
 
-@pytest.mark.parametrize("reagent, prepared", [("LT1", 32.5), ("L2000", 30)])
-def test_default_workbook_instructions_distinguish_prepared_and_delivered_volumes(tmp_path, reagent, prepared):
+@pytest.mark.parametrize("reagent, prepared, displayed", [("LT1", 32.5, 32.6), ("L2000", 30, 30)])
+def test_default_workbook_instructions_distinguish_prepared_and_delivered_volumes(tmp_path, reagent, prepared, displayed):
     result = generate(b"Well,Plasmid,Mass (ng)\nA1,Stock,100\n", "plate.csv",
                       {"Stocks": [["Plasmid", "Concentration"], ["Stock", 100]]},
                       "test", "test-time", [reagent], default_configs())
@@ -84,7 +84,7 @@ def test_default_workbook_instructions_distinguish_prepared_and_delivered_volume
         notes = texts(workbook["Mix Map"])
         preparation_notes = [text for text in notes if text.lower().startswith("prepare ")]
         delivery_notes = [text for text in notes if text.lower().startswith("deliver ")]
-        assert any(prepared in volumes(text) for text in preparation_notes)
+        assert any(displayed in volumes(text) for text in preparation_notes)
         assert any(volumes(text)[0] == 25 for text in delivery_notes if volumes(text))
         row = table_cells(workbook["Well summary"])[0]
         dna_target = row["DNA mix target_uL"].value
@@ -144,8 +144,8 @@ def test_map_preparation_includes_custom_overages_without_changing_the_aliquot(t
     workbook = load_workbook(BytesIO(result["artifacts"][0]["bytes"]))
     try:
         assert ("Bulk transfectant mix 1 ▲ | 100 ng DNA/well | 2 wells | "
-                "Add 1.53 uL Custom reagent to 100.47 uL Custom diluent. | "
-                "Add 30.00 uL to each assigned DNA mix.") in texts(workbook["Mix Map"])
-        assert any(text.splitlines()[-2:] == ["Add 30.00 uL", "▲"] for text in texts(workbook["Mix Map"]))
+                "Add 1.530 uL Custom reagent to 100.4 uL Custom diluent. | "
+                "Add 30.0 uL to each assigned DNA mix.") in texts(workbook["Mix Map"])
+        assert any(text.splitlines()[-2:] == ["Add 30.0 uL", "▲"] for text in texts(workbook["Mix Map"]))
     finally:
         workbook.close()

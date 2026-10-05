@@ -1,3 +1,40 @@
+# Excel output formatting verification
+
+Verified October 5, 2026. Source update only; no installer was built, installed,
+or published for these formatting changes.
+
+## Automated checks
+
+- `.venv/bin/python -m pytest -q`: **416 tests passed**.
+- `UV_CACHE_DIR=/private/tmp/mixmap-formatting-uv-cache uv lock --check --offline`:
+  passed; dependency versions are unchanged.
+- `git diff --check`: passed.
+
+Coverage includes all six layouts with LT1 and L2000, both 96-well halves,
+bold well identifiers, retained large bulk-mix symbols, neutral grayscale
+throughout the workbook, blank grid corner labels, and source-free subtitles.
+Rounding checks cover each pipette increment, precision band, boundary crossing,
+half-up tie, zero, and tiny positive volumes. Export checks confirm printed
+warning examples use original numeric values while calculations, supporting
+numeric tables, source labels, and diagnostic text retain their existing values.
+
+## Rendered workbook review
+
+Generated fresh synthetic workbooks through the application exporter and
+imported them into Artifact Tool for visual inspection. Reviewed dense 96-well
+maps (both halves), dense 48-well maps, and single-well maps for both reagents,
+plus a sparse 48-well L2000 map and a printable bulk recipe. Bold well IDs, regular recipe text, large mix
+symbols, readable rounded amounts, wrapping, and the active/empty/header gray
+hierarchy rendered correctly without clipping or overlap.
+
+Synthetic workbooks, render scripts, and PNG evidence are retained in the
+ignored `build/mixmap-formatting/visual-checks/` directory.
+
+These are worksheet renders, not native Excel print or PDF checks. Native Excel
+automation stalled during app discovery and was aborted. Print geometry,
+merged dish cells, page areas, and landscape Letter settings passed automated
+checks; native pagination and physical printing were not reverified.
+
 # v1.0.1 source verification
 
 Verified October 4, 2026. This is a tested source update; no v1.0.1 installer

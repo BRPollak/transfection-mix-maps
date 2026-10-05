@@ -184,6 +184,24 @@ once**, then use its assigned aliquots across both halves. Recipe symbols and
 amounts are consistent across the two tabs. All supporting sheets remain
 available for the complete plate.
 
+Printable Mix Map and bulk recipe volumes use pipette-aware rounding:
+
+| Calculated volume (µL) | Nearest increment (µL) | Decimal places |
+| --- | --- | --- |
+| Below 2.5 | 0.002 | 3 |
+| 2.5 to below 10 | 0.01 | 2 |
+| 10 to below 20 | 0.02 | 2 |
+| 20 through 200 | 0.2 | 1 |
+| Above 200 | 1 | 0 |
+
+Exact halfway values round upward. The calculated volume determines the band,
+even when rounding crosses a boundary. Each printed amount is rounded
+independently, so printed components may differ slightly from printed totals
+(for example, 32.5 µL prints as 32.6 µL). Calculations and supporting numeric
+tables retain their existing precision. All workbook sheets use grayscale;
+DNA wells are the lightest gray, empty wells are darker, and row/column labels
+are slightly darker again. Bold well identifiers help locate each recipe.
+
 Preparation volumes include overage for pipetting loss. Deliver only the
 configured **Final volume to be delivered to each well**. The well overage factor
 increases the amount prepared per well; the L2000 bulk overage factor adds extra

@@ -8,7 +8,7 @@ import os
 import re
 import unicodedata
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
 import pandas as pd
@@ -873,6 +873,25 @@ def describe_well_components(well_name, details, max_items=3):
     return "; ".join(parts)
 
 
+def _tiny_dna_warning(details, volume_formatter=None):
+    """Render the same diagnostic from original values for tables or print."""
+    if details.empty:
+        return None
+    tiny_dna = details[(details["Working DNA volume_uL"] > 0) & (details["Working DNA volume_uL"] < 0.2)]
+    if tiny_dna.empty:
+        return None
+    if volume_formatter is None:
+        volume_formatter = lambda value: f"{value:.3f} uL"
+    examples = [
+        f"{row['Well']} {row['Matched plasmid']} {volume_formatter(row['Working DNA volume_uL'])}"
+        for _, row in tiny_dna.head(12).iterrows()
+    ]
+    return (
+        f"{len(tiny_dna)} DNA component volume(s) are below 0.200 uL and may be difficult to pipette accurately. "
+        f"Examples: {summarize_list(examples, 12)}."
+    )
+
+
 def calculate_mix(wells_df, matched_df, config):
     warnings = []
     details = matched_df.copy()
@@ -1009,12 +1028,9 @@ def calculate_mix(wells_df, matched_df, config):
         warnings.append(
             f"{len(low_transfection_diluent)} well(s) leave less than 1.000 uL transfection diluent. Examples: {summarize_list(low_transfection_diluent['Well'].tolist(), 12)}."
         )
-    tiny_dna = details[(details["Working DNA volume_uL"] > 0) & (details["Working DNA volume_uL"] < 0.2)]
-    if not tiny_dna.empty:
-        examples = [f"{row['Well']} {row['Matched plasmid']} {row['Working DNA volume_uL']:.3f} uL" for _, row in tiny_dna.head(12).iterrows()]
-        warnings.append(
-            f"{len(tiny_dna)} DNA component volume(s) are below 0.200 uL and may be difficult to pipette accurately. Examples: {summarize_list(examples, 12)}."
-        )
+    tiny_dna_warning = _tiny_dna_warning(details)
+    if tiny_dna_warning:
+        warnings.append(tiny_dna_warning)
 
     bulk = {}
     if config.get("mode") == "two_tube":
@@ -1091,12 +1107,39 @@ def safe_sheet_title(value):
 
 
 def format_volume_ul(value):
-    if value is None:
-        value = 0.0
-    value = max(float(value), 0.0)
-    if abs(value) < 1.0:
-        return f"{value:.3f} uL"
-    return f"{value:.2f} uL"
+    """Pipette increments for printable recipes, without changing calculations.
+
+    Select precision using the original volume, including when rounding crosses
+    a band boundary. Decimal half-up rounding avoids binary float tie behavior.
+    Preserve the existing treatment of missing or negligible negative volumes.
+    """
+    value = max(Decimal(0), Decimal(str(value if value is not None else 0)))
+    if value < Decimal("2.5"):
+        step, places = Decimal("0.002"), 3
+    elif value < 10:
+        step, places = Decimal("0.01"), 2
+    elif value < 20:
+        step, places = Decimal("0.02"), 2
+    elif value <= 200:
+        step, places = Decimal("0.2"), 1
+    else:
+        step, places = Decimal(1), 0
+    rounded = (value / step).to_integral_value(rounding=ROUND_HALF_UP) * step
+    return f"{rounded:.{places}f} uL"
+
+
+def _printable_map_warnings(warnings, details):
+    """Round diagnostic examples from source values only in the printable map.
+
+    Match the complete generated diagnostic (optionally reagent-prefixed), so
+    numbers inside user-supplied plasmid names and other warnings stay literal.
+    """
+    diagnostic = _tiny_dna_warning(details)
+    printable = _tiny_dna_warning(details, format_volume_ul) if diagnostic else None
+    for warning in dedupe_messages(warnings or []):
+        if diagnostic and (warning == diagnostic or warning.endswith(": " + diagnostic)):
+            warning = warning[:-len(diagnostic)] + printable
+        yield warning
 
 
 def shorten_label(value, max_chars=24):
@@ -1126,8 +1169,8 @@ def literal_cell(ws, row, column, value):
 
 
 def write_dataframe(ws, df, start_row=1, start_col=1, freeze=True):
-    header_fill = PatternFill("solid", fgColor="D9EAF7")
-    thin = Side(border_style="thin", color="D0D7DE")
+    header_fill = PatternFill("solid", fgColor="D4D4D4")
+    thin = Side(border_style="thin", color="D7D7D7")
     header_font = Font(name="Arial", bold=True, size=10)
     body_font = Font(name="Arial", size=10)
 
@@ -1239,7 +1282,7 @@ def write_bulk_mixes_sheet(wb, bulk, config):
     title_font = Font(name="Arial", bold=True, size=15)
     body_font = Font(name="Arial", size=11)
     white = PatternFill("solid", fgColor="FFFFFF")
-    recipe_fill = PatternFill("solid", fgColor="E2F0D9")
+    recipe_fill = PatternFill("solid", fgColor="EEEEEE")
     write_merged_note(ws, 1, 4, "L2000 bulk transfectant mixes", white, title_font)
     ws.row_dimensions[1].height = 26
     write_merged_note(ws, 2, 4,
@@ -1311,18 +1354,19 @@ def write_mix_map_sheet(
     well_col_width = (190 if len(cols) == 12 else 176) / len(cols)
 
     title_fill = PatternFill("solid", fgColor="FFFFFF")
-    header_fill = PatternFill("solid", fgColor="D9EAF7")
-    note_fill = PatternFill("solid", fgColor="FFF2CC")
-    active_fill = PatternFill("solid", fgColor="E2F0D9")
-    empty_fill = PatternFill("solid", fgColor="F3F4F6")
+    header_fill = PatternFill("solid", fgColor="D4D4D4")
+    note_fill = PatternFill("solid", fgColor="EEEEEE")
+    active_fill = PatternFill("solid", fgColor="F7F7F7")
+    empty_fill = PatternFill("solid", fgColor="E6E6E6")
     title_font = Font(name="Arial", bold=True, size=17)
-    subtitle_font = Font(name="Arial", size=8, color="5F6368")
+    subtitle_font = Font(name="Arial", size=8, color="666666")
     note_font = Font(name="Arial", bold=True, size=9)
     header_font = Font(name="Arial", bold=True, size=11)
     well_font_size = 8 if len(cols) >= 10 else 8.5
     well_font = Font(name="Arial", size=well_font_size)
+    well_label_font = InlineFont(rFont="Arial", sz=well_font_size, b=True)
     symbol_font = InlineFont(rFont="Arial", sz=16, b=True)
-    empty_font = Font(name="Arial", size=8, color="9AA0A6")
+    empty_font = Font(name="Arial", size=8, color="666666")
 
     title = f"{Path(csv_name).stem} - {config['display_name']} print mix map"
     if plate_format.well_count == 96:
@@ -1342,7 +1386,7 @@ def write_mix_map_sheet(
         2,
         last_col,
         f"{plate_format.label} ({plate_format.well_range}) | "
-        f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')} | Concentration source: {spreadsheet_id}",
+        f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         title_fill,
         subtitle_font,
         Alignment(horizontal="left", vertical="center"),
@@ -1381,7 +1425,7 @@ def write_mix_map_sheet(
                      f"{format_volume_ul(mix['Bulk diluent_uL'])} {config['diluent_label']}. | "
                      f"Add {format_volume_ul(mix['Per-well transfection mix_uL'])} "
                      "to each assigned DNA mix.")
-    for warning in limited_examples(dedupe_messages(case_warnings or []), 3):
+    for warning in limited_examples(_printable_map_warnings(case_warnings, details), 3):
         notes.append(f"WARNING: {warning}")
 
     for offset, note in enumerate(notes):
@@ -1394,7 +1438,7 @@ def write_mix_map_sheet(
             ws.row_dimensions[row_idx].height = 30 if note.startswith("WARNING:") or len(note) > 120 else 18
 
     start_row = 3 + len(notes) + 1
-    corner = ws.cell(start_row, 1, "Row")
+    corner = ws.cell(start_row, 1)
     corner.font = header_font
     corner.fill = header_fill
     corner.alignment = Alignment(horizontal="center", vertical="center")
@@ -1432,9 +1476,16 @@ def write_mix_map_sheet(
             wrapped_lines = sum(max(1, math.ceil(len(line) / chars_per_line)) for line in lines)
             max_lines = max(max_lines, wrapped_lines or 1)
             value = "\n".join(lines) if lines else ("A1" if plate_format.well_count == 1 else "")
-            if lines and config.get("mode") == "two_tube" and summary_row.get("Bulk mix symbol"):
-                value = CellRichText("\n".join(lines[:-1]) + "\n", TextBlock(symbol_font, lines[-1]))
-                symbol_rows.add(row_label)
+            if lines:
+                well_label = str(summary_row["Well"])
+                value = CellRichText(TextBlock(well_label_font, well_label))
+                has_symbol = config.get("mode") == "two_tube" and summary_row.get("Bulk mix symbol")
+                body_lines = lines[:-1] if has_symbol else lines
+                value.append("\n".join(body_lines)[len(well_label):])
+                if has_symbol:
+                    value.append("\n")
+                    value.append(TextBlock(symbol_font, lines[-1]))
+                    symbol_rows.add(row_label)
             sheet_col = start_col + (col_pos - 1) * column_span
             cell = ws.cell(sheet_row, sheet_col, value)
             cell.alignment = Alignment(wrap_text=True, horizontal="left", vertical="top")
