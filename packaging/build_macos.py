@@ -135,7 +135,7 @@ def finish_package(staging, dmg=None, pkg=None):
     if (info.get("CFBundleIconFile") != BUNDLE_ICON or not icon.is_file()
             or icon.read_bytes() != (PROJECT / "assets" / BUNDLE_ICON).read_bytes()):
         raise RuntimeError("Rebuild the staged app: its app icon is missing or differs from this source.")
-    for name in ["README.md", "BUILDING.md", "VALIDATION.md", "CHANGELOG.md"]:
+    for name in ["LICENSE", "README.md", "BUILDING.md", "VALIDATION.md", "CHANGELOG.md"]:
         shutil.copy2(PROJECT / name, resources / name)
     shutil.copy2(PROJECT / "packaging" / "Read Me.txt", staging / "Read Me.txt")
     run("/usr/bin/codesign", "--force", "--deep", "--sign", "-", "--timestamp=none", app)
@@ -222,7 +222,7 @@ def main():
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(PROJECT / name, target)
     shutil.copy2(PROJECT / "assets" / BUNDLE_ICON, resources / BUNDLE_ICON)
-    for name in ["README.md", "BUILDING.md", "VALIDATION.md", "CHANGELOG.md"]:
+    for name in ["LICENSE", "README.md", "BUILDING.md", "VALIDATION.md", "CHANGELOG.md"]:
         shutil.copy2(PROJECT / name, resources / name)
     package_inventory = sorted(
         [{"name": d.metadata["Name"], "version": d.version}
