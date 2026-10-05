@@ -241,7 +241,8 @@ def test_mix_map_and_recipe_sheet_identify_every_wells_recipe_and_aliquot(tmp_pa
                     assert summary[well]["Bulk transfectant mix"] == mix["Mix"]
                     assert summary[well]["Bulk mix symbol"] == mix["Symbol"]
             assert len(group_symbols) == group_count
-            assert len(legend_fills) == len(card_fills) == len(well_fills) == 1
+            assert legend_fills == card_fills == {"00EEEEEE"}
+            assert well_fills == {"00F7F7F7"}
         finally:
             workbook.close()
 
@@ -268,25 +269,33 @@ def test_each_plate_restarts_mix_numbering_and_has_its_own_recipes(tmp_path):
 
 
 @pytest.mark.parametrize("group_count", [1, 2])
-def test_only_multi_mix_markers_use_large_printable_rich_text(tmp_path, group_count):
+@pytest.mark.parametrize("plate_type", [96, 48, 24, 12, 6])
+def test_bold_well_labels_preserve_large_multi_mix_markers(tmp_path, group_count, plate_type):
     rows = [(f"A{number}", "A", number * 100) for number in range(1, group_count + 1)]
     result = generate(plate_bytes(rows), "markers.csv", STOCKS, "test", "test-time",
-                      ["L2000"], default_configs())
+                      ["L2000"], default_configs(), plate_type=plate_type)
     data = result["artifacts"][0]["bytes"]
     plain = load_workbook(BytesIO(data))
     rich = load_workbook(BytesIO(data), rich_text=True)
+    map_name = "Mix Map (A-D)" if plate_type == 96 else "Mix Map"
     try:
         for mix in result["artifacts"][0]["bulk"]["mixes"]:
             for well in mix["Wells"]:
-                cell = well_cell(plain["Mix Map"], well)
-                styled = rich["Mix Map"][cell.coordinate]
+                cell = well_cell(plain[map_name], well)
+                styled = rich[map_name][cell.coordinate]
                 assert str(styled.value) == cell.value
                 assert styled.font.name == "Arial"
-                assert styled.font.sz == 8.5
-                if group_count == 1:
-                    assert isinstance(styled.value, str)
-                    continue
+                assert styled.font.sz == (8 if plate_type == 96 else 8.5)
                 assert isinstance(styled.value, CellRichText)
+                label = styled.value[0]
+                assert isinstance(label, TextBlock)
+                assert label.text == well
+                assert label.font.b is True
+                assert not styled.font.b
+                bold_texts = [part.text for part in styled.value if isinstance(part, TextBlock) and part.font.b]
+                assert bold_texts == ([well] if group_count == 1 else [well, mix["Symbol"]])
+                if group_count == 1:
+                    continue
                 marker = styled.value[-1]
                 assert isinstance(marker, TextBlock)
                 assert marker.text == mix["Symbol"]
@@ -294,7 +303,7 @@ def test_only_multi_mix_markers_use_large_printable_rich_text(tmp_path, group_co
                 assert marker.font.sz == 16
                 assert marker.font.b is True
                 body_lines = len(cell.value.splitlines()) - 1
-                assert rich["Mix Map"].row_dimensions[cell.row].height >= 14 + 12 * body_lines + 20
+                assert rich[map_name].row_dimensions[cell.row].height >= 14 + 12 * body_lines + 20
     finally:
         plain.close()
         rich.close()

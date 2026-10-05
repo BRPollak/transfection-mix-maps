@@ -5,6 +5,7 @@ from io import BytesIO, StringIO
 
 from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
+from openpyxl.cell.rich_text import CellRichText, TextBlock
 from openpyxl.utils import get_column_letter
 import pytest
 
@@ -30,7 +31,7 @@ def workbook_for(rows, plate_type, reagent="L2000", stocks=None):
 
 
 def grid_header(sheet):
-    return next(cell.row for cell in sheet["A"] if cell.value == "Row")
+    return sheet[sheet.freeze_panes].row - 1
 
 
 def grid_positions(sheet):
@@ -47,25 +48,63 @@ def texts(sheet):
     return [cell.value for row in sheet for cell in row if isinstance(cell.value, str)]
 
 
+def assert_grayscale_workbook(workbook):
+    for sheet in workbook:
+        for row in sheet:
+            for cell in row:
+                colors = [cell.font.color]
+                if cell.fill.patternType == "solid":
+                    color = cell.fill.fgColor
+                    assert color.type == "rgb"
+                    assert int(color.rgb[-6:-4], 16) >= 0xD4
+                    colors.append(color)
+                colors.extend(side.color for side in (
+                    cell.border.left, cell.border.right, cell.border.top, cell.border.bottom,
+                ) if side is not None)
+                for color in colors:
+                    if color is not None and color.type == "rgb":
+                        rgb = color.rgb[-6:]
+                        assert rgb[:2] == rgb[2:4] == rgb[4:], (sheet.title, cell.coordinate, rgb)
+
+
 @pytest.mark.parametrize("plate_type", [96, 48, 24, 12, 6, 1])
 @pytest.mark.parametrize("reagent", ["LT1", "L2000"])
 def test_sparse_workbooks_show_every_supported_position_exactly_once(plate_type, reagent):
     plate_format = PLATE_FORMATS[plate_type]
-    workbook, _ = workbook_for([("A1", "Stock", 100)], plate_type, reagent)
+    active_wells = {"A1", f"{plate_format.rows[-1]}{plate_format.columns[-1]}"}
+    workbook, artifact = workbook_for([(well, "Stock", 100) for well in sorted(active_wells)], plate_type, reagent)
+    rich = load_workbook(BytesIO(artifact["bytes"]), rich_text=True)
     try:
+        assert_grayscale_workbook(workbook)
         maps = [sheet for sheet in workbook if sheet.title.startswith("Mix Map")]
         assert [sheet.title for sheet in maps] == [name for name, _ in plate_format.map_sections]
         found = []
         for sheet, (_, expected_rows) in zip(maps, plate_format.map_sections):
             header_row = grid_header(sheet)
+            assert sheet.cell(header_row, 1).value is None
+            assert "Concentration source" not in sheet["A2"].value
+            assert sheet["A2"].value.startswith(f"{plate_format.label} ({plate_format.well_range}) | Generated ")
             assert [cell.value for cell in sheet[header_row][1:]
                     if not isinstance(cell, MergedCell)] == list(plate_format.columns)
             assert [sheet.cell(row, 1).value for row in range(header_row + 1, sheet.max_row + 1)] == list(expected_rows)
+            labels = [cell for cell in sheet[header_row] if not isinstance(cell, MergedCell)]
+            labels.extend(sheet.cell(row, 1) for row in range(header_row + 1, sheet.max_row + 1))
+            assert all(cell.fill.fgColor.rgb == "00D4D4D4" for cell in labels)
             positions = grid_positions(sheet)
             found.extend(positions)
             for well, cell in positions.items():
-                assert cell.fill.fgColor.rgb == ("00E2F0D9" if well == "A1" else "00F3F4F6")
+                assert cell.fill.fgColor.rgb == ("00F7F7F7" if well in active_wells else "00E6E6E6")
                 assert cell.alignment.wrap_text
+                if well in active_wells:
+                    styled = rich[sheet.title][cell.coordinate]
+                    assert isinstance(styled.value, CellRichText)
+                    assert str(styled.value) == cell.value
+                    label = styled.value[0]
+                    assert isinstance(label, TextBlock)
+                    assert label.text == well
+                    assert label.font.b is True
+                    assert not styled.font.b
+                    assert not any(part.font.b for part in styled.value[1:] if isinstance(part, TextBlock))
             assert sheet.page_setup.orientation == "landscape"
             assert str(sheet.page_setup.paperSize) == sheet.PAPERSIZE_LETTER
             assert sheet.page_setup.fitToWidth == sheet.page_setup.fitToHeight == 1
@@ -89,6 +128,7 @@ def test_sparse_workbooks_show_every_supported_position_exactly_once(plate_type,
             assert "A-D and E-H" in settings["Print layout"]
     finally:
         workbook.close()
+        rich.close()
 
 
 @pytest.mark.parametrize("plate_type", [24, 12, 6, 1])
@@ -153,7 +193,9 @@ def test_96_well_empty_bottom_half_still_has_the_same_recipes_and_notes():
     try:
         top, bottom = workbook["Mix Map (A-D)"], workbook["Mix Map (E-H)"]
         assert all(cell.value is None for cell in grid_positions(bottom).values())
-        assert texts(top)[1:grid_header(top) - 1] == texts(bottom)[1:grid_header(bottom) - 1]
+        assert [top.cell(row, 1).value for row in range(2, grid_header(top))] == [
+            bottom.cell(row, 1).value for row in range(2, grid_header(bottom))
+        ]
     finally:
         workbook.close()
 

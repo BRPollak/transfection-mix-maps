@@ -1,18 +1,17 @@
-# Transfection Mix Maps · v1.0.1
+# Transfection Mix Maps · v1.0.3
 
 Create Excel transfection mix maps for **LT1** or **L2000** from plate-layout
 CSVs and DNA concentrations in Google Sheets. Preview up to five plates and
 save a separate workbook for each one.
 
-**v1.0.1 is a source update.** No v1.0.1 installer has been built or published.
-Run this version using [BUILDING.md](BUILDING.md). The currently published
-installer is **v1.0.0**, for Apple Silicon Macs running macOS 14 or later, and
-includes Python and all dependencies. It does not include the plate-type
-features described below.
+**v1.0.3** includes all six plate types and updated printable Excel maps with
+bold well identifiers, grayscale styling, and pipette-aware volume rounding.
+The self-contained installer is for Apple Silicon Macs running macOS 14 or
+later and includes Python and all dependencies.
 
-## Install or update the published v1.0.0 app
+## Install or update v1.0.3
 
-1. [Download the v1.0.0 installer](https://github.com/BRPollak/transfection-mix-maps/releases/download/v1.0.0/Transfection-Mix-Maps-1.0.0-arm64.pkg).
+1. [Download the v1.0.3 installer](https://github.com/BRPollak/transfection-mix-maps/releases/download/v1.0.3/Transfection-Mix-Maps-1.0.3-arm64.pkg).
 2. Quit **Transfection Mix Maps** if it is running.
 3. Open the `.pkg` and follow the Installer prompts.
 4. Open **Transfection Mix Maps** from **Applications**.
@@ -181,6 +180,24 @@ instructions and full-plate recipes; **prepare each whole-plate bulk recipe
 once**, then use its assigned aliquots across both halves. Recipe symbols and
 amounts are consistent across the two tabs. All supporting sheets remain
 available for the complete plate.
+
+Printable Mix Map and bulk recipe volumes use pipette-aware rounding:
+
+| Calculated volume (µL) | Nearest increment (µL) | Decimal places |
+| --- | --- | --- |
+| Below 2.5 | 0.002 | 3 |
+| 2.5 to below 10 | 0.01 | 2 |
+| 10 to below 20 | 0.02 | 2 |
+| 20 through 200 | 0.2 | 1 |
+| Above 200 | 1 | 0 |
+
+Exact halfway values round upward. The calculated volume determines the band,
+even when rounding crosses a boundary. Each printed amount is rounded
+independently, so printed components may differ slightly from printed totals
+(for example, 32.5 µL prints as 32.6 µL). Calculations and supporting numeric
+tables retain their existing precision. All workbook sheets use grayscale;
+DNA wells are the lightest gray, empty wells are darker, and row/column labels
+are slightly darker again. Bold well identifiers help locate each recipe.
 
 Preparation volumes include overage for pipetting loss. Deliver only the
 configured **Final volume to be delivered to each well**. The well overage factor
