@@ -5,11 +5,24 @@ A teal tile with a simple six-well plate and one light-purple well, matching the
 - `mix-maps-icon.png`: 256 px transparent PNG used by the app header and browser tab.
 - `mix-maps-icon-1024.png`: 1024 px transparent PNG for reuse.
 - `mix-maps.icns`: multiresolution macOS icon for Finder, aliases, and the Dock.
-- `mix-maps-icon-original.png`: original generated artwork, retained without changes.
+- `mix-maps-icon-corrected.png`: corrected source artwork, with the dark blur above the plate removed; used for all current exports.
+- `mix-maps-icon-original.png`: original generated artwork, retained as an archive; not used by the app.
 
 Created with the built-in image generation tool. PNG size exports use macOS `sips`; the ICNS uses `iconutil` with standard 16–1024 px representations. Transparency is preserved.
 
 The macOS builder copies the ICNS into the app bundle and sets `CFBundleIconFile`. Rebuild the app to apply the icon to packaged copies.
+
+## Correction prompt
+
+Edited with the built-in image generation tool, then refreshed both PNG exports and the ICNS file.
+
+```text
+Use case: precise-object-edit
+Input image: the existing Transfection Mix Maps app icon; edit target.
+Fix the unwanted dark blurry smudge near the top of the teal tile. Remove ALL cloudy shading, gradients, texture, spots, and lighting from the colored shapes, particularly the dark horizontal blurry area at the upper center. The entire teal background tile must be one uniform solid flat teal #237D70, including above the white plate. Fill each of the five teal circular wells with that same uniform solid teal. White plate is flat solid #FAFBF8, purple well is flat solid #D8C5EC.
+Keep the existing design, positions, proportions, six circles in two rows of three, lower-right purple circle, rounded corners, square canvas, transparent exterior padding, and shape geometry unchanged. Crisp antialiased edges only. Do not introduce any shadow, lighting, depth, texture or tonal variation anywhere inside a shape. No text or extra elements. Preserve actual transparency outside the tile.
+Output just the corrected app icon.
+```
 
 ## Generation prompt
 
