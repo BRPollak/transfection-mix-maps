@@ -28,6 +28,10 @@ def button(at, label):
     return next(b for b in at.button if b.label == label)
 
 
+def downloads(at):
+    return [b for b in at.button if b.label.startswith("Download ")]
+
+
 def connected(monkeypatch, tmp_path, *, valid=True):
     tables = {"Stocks": [["Plasmid", "Concentration (ng/uL)"],
                           ["Example_A", 100], ["Example_B", 50], ["Example_C", 75]]}
@@ -145,8 +149,84 @@ def test_verified_sheet_generates_only_selected_reagent(monkeypatch, tmp_path):
     button(at, "Generate L2000 Excel mix map").click().run()
     assert not at.exception
     assert at.session_state.result["artifacts"][0]["reagent"] == "L2000"
-    assert len(list(tmp_path.glob("*.xlsx"))) == 2
-    assert at.session_state.result["folder"] == str(tmp_path)
+    assert not list(tmp_path.glob("*.xlsx"))
+    assert "folder" not in at.session_state.result
+    assert not at.get("download_button")
+    assert len(downloads(at)) == 1
+
+
+def test_download_saves_to_current_selected_folder_without_regenerating(monkeypatch, tmp_path):
+    at, _ = connected(monkeypatch, tmp_path)
+    button(at, "Generate LT1 Excel mix map").click().run()
+    artifact = at.session_state.result["artifacts"][0]
+    workbook_bytes = artifact["bytes"]
+    fingerprint = at.session_state.result_fingerprint
+    assert not list(tmp_path.glob("*.xlsx"))
+    assert any("generated" in message.value for message in at.success)
+    assert not any("workbook" in message.value.lower() and "saved" in message.value for message in at.success)
+
+    destination = tmp_path / "Chosen workbooks"
+    destination.mkdir()
+    monkeypatch.setattr(native_dialogs, "choose_output_folder", Mock(return_value=str(destination)))
+    button(at, "Save Excel files to…").click().run()
+    assert not at.exception
+    assert at.session_state.result_fingerprint == fingerprint
+    assert at.session_state.result["artifacts"][0]["bytes"] == workbook_bytes
+    assert not list(destination.iterdir())
+    button(at, "Download LT1 workbook").click().run()
+    assert not at.exception
+    assert not at.error
+    assert not at.get("download_button")
+    assert not list(tmp_path.glob("*.xlsx"))
+    saved = destination / artifact["name"]
+    assert saved.read_bytes() == workbook_bytes
+    assert any(str(saved) in caption.value for caption in at.caption)
+    assert any("Workbook saved" in message.value for message in at.success)
+
+    at.run()
+    assert list(destination.iterdir()) == [saved]
+    button(at, "Download LT1 workbook").click().run()
+    assert not at.exception
+    files = list(destination.iterdir())
+    assert len(files) == 2
+    assert all(path.read_bytes() == workbook_bytes for path in files)
+    latest_save = at.session_state.result["artifacts"][0]["saved"]["path"]
+    assert latest_save != str(saved)
+    assert any(latest_save in caption.value for caption in at.caption)
+    monkeypatch.setattr(native_dialogs, "choose_output_folder", Mock(return_value=str(tmp_path)))
+    button(at, "Save Excel files to…").click().run()
+    assert not at.exception
+    assert not list(tmp_path.glob("*.xlsx"))
+    assert not any("Workbook saved" in message.value for message in at.success)
+    assert at.session_state.result_fingerprint == fingerprint
+    button(at, "Download LT1 workbook").click().run()
+    assert not at.exception
+    assert (tmp_path / artifact["name"]).read_bytes() == workbook_bytes
+    assert len(list(destination.iterdir())) == 2
+
+
+def test_removed_destination_disables_download_and_new_folder_keeps_preview(monkeypatch, tmp_path):
+    at, _ = connected(monkeypatch, tmp_path)
+    destination = tmp_path / "Removed folder"
+    destination.mkdir()
+    monkeypatch.setattr(native_dialogs, "choose_output_folder", Mock(return_value=str(destination)))
+    button(at, "Save Excel files to…").click().run()
+    button(at, "Generate LT1 Excel mix map").click().run()
+    artifact = at.session_state.result["artifacts"][0]
+    destination.rmdir()
+    button(at, "Download LT1 workbook").click().run()
+    assert not at.exception
+    assert not destination.exists()
+    assert "result" in at.session_state
+    assert button(at, "Download LT1 workbook").disabled
+    assert not list(tmp_path.glob("*.xlsx"))
+    monkeypatch.setattr(native_dialogs, "choose_output_folder", Mock(return_value=str(tmp_path)))
+    button(at, "Save Excel files to…").click().run()
+    assert at.session_state.result["artifacts"][0]["name"] == artifact["name"]
+    button(at, "Download LT1 workbook").click().run()
+    assert not at.exception
+    assert not at.error
+    assert (tmp_path / artifact["name"]).read_bytes() == artifact["bytes"]
 
 
 def test_l2000_results_show_separate_recipes_and_well_assignments(monkeypatch, tmp_path):
@@ -169,7 +249,7 @@ def test_l2000_results_show_separate_recipes_and_well_assignments(monkeypatch, t
     assert assignment.loc["A", 2] == "Bulk transfectant mix 1"
     assert assignment.loc["B", 2] == "Bulk transfectant mix 2"
     assert assignment.loc["B", 1] == ""
-    assert len(list(tmp_path.glob("*.xlsx"))) == 1
+    assert not list(tmp_path.glob("*.xlsx"))
 
 
 def test_l2000_six_mass_groups_clear_previous_result_without_new_output(monkeypatch, tmp_path):
@@ -178,6 +258,7 @@ def test_l2000_six_mass_groups_clear_previous_result_without_new_output(monkeypa
     button(at, "Generate L2000 Excel mix map").click().run()
     assert not at.exception
     assert "result" in at.session_state
+    button(at, "Download L2000 workbook").click().run()
     existing_outputs = {path.name: path.read_bytes() for path in tmp_path.glob("*.xlsx")}
     plate = tmp_path / "plate.csv"
     plate.write_text("Well,Plasmid,Mass (ng)\n" + "".join(
@@ -188,7 +269,7 @@ def test_l2000_six_mass_groups_clear_previous_result_without_new_output(monkeypa
     assert len(at.error) == 1
     assert "No output was created." in at.error[0].value
     assert "result" not in at.session_state
-    assert not at.get("download_button")
+    assert not downloads(at)
     assert {path.name: path.read_bytes() for path in tmp_path.glob("*.xlsx")} == existing_outputs
 
 
@@ -219,6 +300,7 @@ def test_old_calculation_fingerprint_clears_lt1_result_without_removing_workbook
     button(at, "Generate LT1 Excel mix map").click().run()
     assert not at.exception
     assert "result" in at.session_state
+    button(at, "Download LT1 workbook").click().run()
     existing_outputs = {path.name: path.read_bytes() for path in tmp_path.glob("*.xlsx")}
     # Recreate the pre-revision fingerprint using exactly the same run inputs.
     old_fingerprint = hashlib.sha256(json.dumps({
@@ -227,14 +309,48 @@ def test_old_calculation_fingerprint_clears_lt1_result_without_removing_workbook
                    for plate in at.session_state.plates],
         "snapshot": snapshot, "reagent": "LT1", "config": default_configs()["LT1"],
         "output": str(tmp_path), "sheet_ready": True,
+        "calculation_revision": 2,
     }, sort_keys=True).encode()).hexdigest()
     assert at.session_state.result_fingerprint != old_fingerprint
     at.session_state.result_fingerprint = old_fingerprint
     at.run()
     assert not at.exception
     assert "result" not in at.session_state
-    assert not at.get("download_button")
+    assert not downloads(at)
     assert {path.name: path.read_bytes() for path in tmp_path.glob("*.xlsx")} == existing_outputs
+
+
+@pytest.mark.parametrize("reagent", ["LT1", "L2000"])
+def test_mass_markers_follow_preview_plate_without_invalidating_results(monkeypatch, tmp_path, reagent):
+    from core import BULK_MIX_SYMBOLS
+
+    at, _ = connected(monkeypatch, tmp_path)
+    mixed = tmp_path / "mixed.csv"
+    single = tmp_path / "single.csv"
+    mixed.write_text("Well,Plasmid,Mass (ng)\nA1,Example_A,100\nA2,Example_A,200\n")
+    single.write_text("Well,Plasmid,Mass (ng)\nB1,Example_A,300\nB2,Example_A,300\n")
+    monkeypatch.setattr(native_dialogs, "choose_plate_files", Mock(return_value=[str(mixed), str(single)]))
+    monkeypatch.setattr(native_dialogs, "choose_output_folder", Mock(return_value=str(tmp_path)))
+    button(at, "Choose plate CSVs…").click().run()
+    at.radio(key="reagent_choice").set_value(reagent).run()
+    initial_preview = at.get("html")[0].proto.body
+    assert all(symbol in initial_preview for symbol in BULK_MIX_SYMBOLS[:2])
+    button(at, "Save Excel files to…").click().run()
+    button(at, f"Generate 2 {reagent} Excel mix maps").click().run()
+    assert not at.exception
+    assert not at.error
+    fingerprint = at.session_state.result_fingerprint
+    outputs = {p.name: p.read_bytes() for p in tmp_path.glob("*.xlsx")}
+    at.selectbox(key="preview_plate").set_value(str(single)).run()
+    assert not at.exception
+    preview = at.get("html")[0].proto.body
+    assert not any(symbol in preview for symbol in BULK_MIX_SYMBOLS)
+    assert "result" in at.session_state
+    assert at.session_state.result_fingerprint == fingerprint
+    at.selectbox(key="preview_plate").set_value(str(mixed)).run()
+    assert at.get("html")[0].proto.body == initial_preview
+    assert at.session_state.result_fingerprint == fingerprint
+    assert {p.name: p.read_bytes() for p in tmp_path.glob("*.xlsx")} == outputs
 
 
 def test_plate_folder_auto_selection_manual_override_and_cancel(monkeypatch, tmp_path):
@@ -277,13 +393,17 @@ def test_old_default_migrates_and_customized_volume_survives(monkeypatch, tmp_pa
     assert fresh.number_input(key="L2000_final_volume_ul").value == 25
 
 
-def test_missing_output_folder_blocks_generation_without_creating_it(monkeypatch, tmp_path):
+def test_missing_output_folder_blocks_download_but_allows_generation(monkeypatch, tmp_path):
     at, _ = connected(monkeypatch, tmp_path)
     missing = tmp_path / "does-not-exist"
     at.session_state.output_folder = str(missing)
     at.run()
     assert not at.exception
-    assert button(at, "Generate LT1 Excel mix map").disabled
+    assert not button(at, "Generate LT1 Excel mix map").disabled
+    button(at, "Generate LT1 Excel mix map").click().run()
+    assert not at.exception
+    assert "result" in at.session_state
+    assert button(at, "Download LT1 workbook").disabled
     assert not missing.exists()
     assert any("Choose an existing folder" in e.value for e in at.error)
 
@@ -307,7 +427,7 @@ def make_plates(tmp_path, count=2):
     return plates
 
 
-def test_multiple_plates_require_manual_folder_and_switch_previews(monkeypatch, tmp_path):
+def test_multiple_plates_require_manual_folder_for_download_and_switch_previews(monkeypatch, tmp_path):
     at, _ = connected(monkeypatch, tmp_path)
     assert at.session_state.output_folder == str(tmp_path)
     plates = make_plates(tmp_path)
@@ -317,7 +437,10 @@ def test_multiple_plates_require_manual_folder_and_switch_previews(monkeypatch, 
     assert not at.exception
     assert at.session_state.output_folder == ""
     assert sources.load_settings()["output_folder"] == ""
-    assert button(at, "Generate 2 LT1 Excel mix maps").disabled
+    assert not button(at, "Generate 2 LT1 Excel mix maps").disabled
+    button(at, "Generate 2 LT1 Excel mix maps").click().run()
+    assert all(b.disabled for b in downloads(at))
+    fingerprint = at.session_state.result_fingerprint
     assert at.selectbox(key="preview_plate").options == ["Plate 1.csv", "Plate 2.csv"]
     assert all(any(p == caption.value for caption in at.caption) for p in plates)
     assert "Well A1. Example_A: 100 ng" in at.get("html")[0].proto.body
@@ -326,10 +449,13 @@ def test_multiple_plates_require_manual_folder_and_switch_previews(monkeypatch, 
     assert "Well A1. Example_A" not in at.get("html")[0].proto.body
     monkeypatch.setattr(native_dialogs, "choose_output_folder", Mock(return_value=None))
     button(at, "Save Excel files to…").click().run()
-    assert button(at, "Generate 2 LT1 Excel mix maps").disabled
+    assert all(b.disabled for b in downloads(at))
     monkeypatch.setattr(native_dialogs, "choose_output_folder", Mock(return_value=str(tmp_path)))
     button(at, "Save Excel files to…").click().run()
     assert not button(at, "Generate 2 LT1 Excel mix maps").disabled
+    assert len(downloads(at)) == 2
+    assert all(not b.disabled for b in downloads(at))
+    assert at.session_state.result_fingerprint == fingerprint
     picker.return_value = None
     button(at, "Choose plate CSVs…").click().run()
     assert len(at.session_state.plates) == 2
@@ -338,14 +464,15 @@ def test_multiple_plates_require_manual_folder_and_switch_previews(monkeypatch, 
     picker.return_value = plates
     button(at, "Choose plate CSVs…").click().run()
     assert at.session_state.output_folder == ""
-    assert button(at, "Generate 2 LT1 Excel mix maps").disabled
+    assert not button(at, "Generate 2 LT1 Excel mix maps").disabled
+    assert "result" not in at.session_state
     picker.return_value = plates[:1]
     button(at, "Choose plate CSVs…").click().run()
     assert at.session_state.output_folder == str(tmp_path)
     assert not at.selectbox
 
 
-def test_five_plate_batch_saves_all_and_preview_switch_keeps_results(monkeypatch, tmp_path):
+def test_five_plate_batch_downloads_individually_and_preview_switch_keeps_results(monkeypatch, tmp_path):
     at, _ = connected(monkeypatch, tmp_path)
     plates = make_plates(tmp_path, 5)
     monkeypatch.setattr(native_dialogs, "choose_plate_files", Mock(return_value=plates))
@@ -358,14 +485,23 @@ def test_five_plate_batch_saves_all_and_preview_switch_keeps_results(monkeypatch
     artifacts = at.session_state.result["artifacts"]
     assert len(artifacts) == 5
     assert len({artifact["name"] for artifact in artifacts}) == 5
-    assert len(list(tmp_path.glob("*.xlsx"))) == 5
-    assert len(at.get("download_button")) == 5
+    assert not list(tmp_path.glob("*.xlsx"))
+    assert not at.get("download_button")
+    assert len(downloads(at)) == 5
     fingerprint = at.session_state.result_fingerprint
     at.selectbox(key="preview_plate").set_value(plates[-1]).run()
     assert not at.exception
     assert "result" in at.session_state
     assert at.session_state.result_fingerprint == fingerprint
     assert "Well E5. Example_A: 104 ng" in at.get("html")[0].proto.body
+    for index, artifact in enumerate(artifacts, 1):
+        at.button(key="download_" + artifact["name"]).click().run()
+        assert not at.exception
+        assert not at.error
+        assert len(list(tmp_path.glob("*.xlsx"))) == index
+        assert (tmp_path / artifact["name"]).read_bytes() == artifact["bytes"]
+    at.run()
+    assert len(list(tmp_path.glob("*.xlsx"))) == 5
 
 
 def test_batch_failure_identifies_plate_without_saving_other_workbooks(monkeypatch, tmp_path):
@@ -405,15 +541,26 @@ def test_duplicate_filenames_have_distinct_preview_options(monkeypatch, tmp_path
     assert not at.exception
 
 
-def test_save_failure_does_not_claim_no_output_when_rollback_is_incomplete(monkeypatch, tmp_path):
+def test_download_failure_keeps_preview_and_allows_retry(monkeypatch, tmp_path):
     import workflow
     at, _ = connected(monkeypatch, tmp_path)
-    failure = sources.MixMapError("Some output files may remain after a save error",
-                                 details=[str(tmp_path / "remaining.xlsx")])
-    failure.outputs_created = True
-    monkeypatch.setattr(workflow, "generate_batch", Mock(side_effect=failure))
     button(at, "Generate LT1 Excel mix map").click().run()
+    artifact = at.session_state.result["artifacts"][0]
+    original_save = workflow.save_artifact
+    failure = PermissionError("The selected folder is read-only")
+    failure.cleanup_warnings = ["Temporary file could not be removed."]
+    monkeypatch.setattr(workflow, "save_artifact", Mock(side_effect=failure))
+    button(at, "Download LT1 workbook").click().run()
     assert not at.exception
     assert len(at.error) == 1
-    assert "output files may remain" in at.error[0].value
-    assert "No output was created." not in at.error[0].value
+    assert "selected folder is read" in at.error[0].value
+    assert any("Temporary file" in warning.value for warning in at.warning)
+    assert "result" in at.session_state
+    assert not any("Workbook saved" in message.value for message in at.success)
+    assert not list(tmp_path.glob("*.xlsx"))
+    monkeypatch.setattr(workflow, "save_artifact", original_save)
+    button(at, "Download LT1 workbook").click().run()
+    assert not at.exception
+    assert not at.error
+    assert not at.warning
+    assert (tmp_path / artifact["name"]).read_bytes() == artifact["bytes"]

@@ -6,7 +6,7 @@ import math
 
 import pandas as pd
 
-from core import parse_well, row_sort_key
+from core import group_dna_masses, parse_well, row_sort_key
 
 
 _STYLE = """<style>
@@ -39,6 +39,25 @@ _STYLE = """<style>
 .tmm-well-filled:hover, .tmm-well-filled:focus {
   border-color:#9271b7; box-shadow:0 0 0 3px #eee6f6; z-index:2;
 }
+.tmm-well-marker {
+  position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  color:#373341; font-size:1.4rem; line-height:1; pointer-events:none;
+}
+.tmm-mass-symbol {font-family:Arial,"DejaVu Sans",sans-serif; line-height:1;}
+.tmm-number-badge {
+  display:inline-flex; align-items:center; justify-content:center;
+  min-width:1.6em; height:1.6em; padding:0 .15em;
+  border:1px solid currentColor; border-radius:50%; font-size:.7rem; font-weight:600;
+}
+.tmm-mass-explanation {
+  margin:16px 0 0; padding:12px; border:1px solid #dfe0e6; border-radius:8px;
+  background:#fff; color:#514b5a; font-size:.78rem; line-height:1.5;
+}
+.tmm-mass-explanation p {margin:0 0 8px;}
+.tmm-mass-legend {list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:5px;}
+.tmm-mass-legend li {display:flex; align-items:center; gap:8px;}
+.tmm-mass-legend .tmm-mass-symbol {display:inline-flex; justify-content:center; width:1.3rem; flex-shrink:0; font-size:1rem;}
+.tmm-mass-legend .tmm-number-badge {flex-shrink:0;}
 .tmm-well-tooltip {
   visibility:hidden; opacity:0; position:absolute; z-index:3;
   bottom:calc(100% + 10px); left:50%; transform:translateX(-50%);
@@ -63,14 +82,27 @@ _STYLE = """<style>
   .tmm-plate-embedded {padding:0;}
   .tmm-plate-grid {grid-template-columns:15px repeat(8,minmax(0,1fr)); gap:10px 6px;}
   .tmm-well-tooltip {max-width:210px;}
+  .tmm-well-marker {font-size:1.15rem;}
+  .tmm-well-marker .tmm-number-badge {font-size:.6rem;}
 }
 </style>"""
+
+
+def _mass_text(mass) -> str:
+    """Keep distinct decimal mass sets readable without rounding them together."""
+    text = format(mass, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def _marker_html(symbol: str, numbered: bool) -> str:
+    css_class = "tmm-number-badge" if numbered else "tmm-mass-symbol"
+    return f'<span class="{css_class}" aria-hidden="true">{escape(symbol)}</span>'
 
 
 def plate_preview_html(
     long_df: pd.DataFrame | None = None,
     wells_df: pd.DataFrame | None = None,
-    *, embedded: bool = False,
+    *, embedded: bool = False, reagent: str = "L2000",
 ) -> str:
     """Return an A1–F8 grid, using the frames from ``standardize_plate_csv``.
 
@@ -79,6 +111,8 @@ def plate_preview_html(
     ``wells_df`` too so any empty wells outside A1–F8 appear in the notice.
     This fixed view does not change which wells may be used for calculations.
     Use ``embedded=True`` inside the app's card with its preview selector.
+    Multiple DNA totals get the same group markers as the L2000 workbook;
+    ``reagent`` selects the explanation, since LT1 exports do not use them.
     """
     components: dict[tuple[str, int], dict[str, float]] = {}
     observed: set[tuple[str, int]] = set()
@@ -95,12 +129,21 @@ def plate_preview_html(
             amounts = components.setdefault(position, {})
             amounts[name] = amounts.get(name, 0) + mass
 
+    groups = group_dna_masses(long_df)
+    show_markers = len(groups) > 1
+    numbered = len(groups) > 5
+    group_label = "Bulk transfectant mix" if reagent == "L2000" and not numbered else "DNA mass set"
+    well_groups = {
+        parse_well(well): group
+        for group in groups for well in group["Wells"]
+    } if show_markers else {}
+
     outside = sorted(
         (position for position in observed if position[0] not in tuple("ABCDEF") or not 1 <= position[1] <= 8),
         key=lambda position: (row_sort_key(position[0]), position[1]),
     )
     caption = ("Choose a plate CSV to populate this preview." if long_df is None else
-               "Hover over a purple well to see its plasmids and DNA masses.")
+               "Hover over or focus a purple well to see its plasmids and DNA masses.")
     classes = "tmm-plate-preview tmm-plate-embedded" if embedded else "tmm-plate-preview"
     parts = [_STYLE, f'<section class="{classes}" aria-label="48-well plate preview">']
     if not embedded:
@@ -124,14 +167,44 @@ def plate_preview_html(
                 continue
             edge = " tmm-well-left" if col <= 3 else " tmm-well-right" if col >= 6 else ""
             entries = [f"{name}: {mass:.12g} ng" for name, mass in amounts.items()]
+            group = well_groups.get((row, col))
+            marker_attributes = ""
+            if group:
+                total = _mass_text(group["Total DNA_ng"])
+                entries.extend([f"Total DNA: {total} ng", f'{group_label} {group["Number"]} ({group["Symbol"]})'])
+                marker_attributes = f' data-mass-group="{group["Number"]}" data-total-dna="{total}"'
             accessible_text = escape(f"Well {well}. " + "; ".join(entries), quote=True)
             parts.append(f'<div class="tmm-well tmm-well-filled{edge}" data-well="{well}" '
-                         f'tabindex="0" role="img" aria-label="{accessible_text}">')
+                         f'tabindex="0" role="img" aria-label="{accessible_text}"{marker_attributes}>')
+            if group:
+                parts.append('<span class="tmm-well-marker" aria-hidden="true">'
+                             + _marker_html(group["Symbol"], numbered) + '</span>')
             parts.append(f'<span class="tmm-well-tooltip" aria-hidden="true"><span class="tmm-tooltip-well">{well}</span>')
             parts.extend(f'<span class="tmm-tooltip-component">{escape(entry)}</span>' for entry in entries)
             parts.append('</span></div>')
     parts.append('</div><div class="tmm-plate-legend" aria-hidden="true">'
                  '<span><i class="tmm-legend-dot tmm-legend-dna"></i>DNA present</span>'
                  '<span><i class="tmm-legend-dot tmm-legend-empty"></i>No DNA</span>'
-                 '</div></section>')
+                 '</div>')
+    if show_markers:
+        if numbered:
+            explanation = (f"This plate contains {len(groups)} total DNA mass sets. Numbered circle badges identify "
+                           "every set because there are more than five. L2000 Excel export supports at most five sets per plate.")
+            if reagent == "LT1":
+                explanation += " These LT1 markers are preview-only and do not appear in the Excel output."
+        elif reagent == "LT1":
+            explanation = ("Shapes identify different total DNA masses per well on this plate. "
+                           "These LT1 markers are preview-only and do not appear in the Excel output.")
+        else:
+            explanation = ("Shapes identify different total DNA masses per well on this plate. "
+                           "Each shape matches its bulk transfectant mix and preparation recipe in the L2000 Excel output.")
+        parts.append('<aside class="tmm-mass-explanation" role="note" aria-label="DNA mass groups">'
+                     f'<p>{explanation}</p><ul class="tmm-mass-legend">')
+        for group in groups:
+            well_count = len(group["Wells"])
+            description = (f'{group_label} {group["Number"]} · {_mass_text(group["Total DNA_ng"])} ng DNA/well'
+                           f' · {well_count} {"well" if well_count == 1 else "wells"}')
+            parts.append(f'<li>{_marker_html(group["Symbol"], numbered)}<span>{description}</span></li>')
+        parts.append('</ul></aside>')
+    parts.append('</section>')
     return "".join(parts)

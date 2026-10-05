@@ -1,6 +1,7 @@
 """Local Streamlit interface for Google Sheets-backed transfection mix maps."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
@@ -18,15 +19,17 @@ from plate_preview import plate_preview_html
 from sources import (APP_DIR, LOCAL_ZONE, STATE_DIR, authenticate_google, auth_status,
                      load_settings, load_snapshot, private_json, refresh_google,
                      read_plate, save_settings, sheet_id)
-from workflow import default_configs, generate_batch
+from workflow import default_configs, generate_batch, save_artifact
 
-st.set_page_config(page_title=f"Generate transfection mix maps · v{VERSION}", page_icon="🧪", layout="wide",
+APP_ICON = Path(__file__).resolve().parent / "assets" / "mix-maps-icon.png"
+
+st.set_page_config(page_title=f"Generate transfection mix maps · v{VERSION}", page_icon=str(APP_ICON), layout="wide",
                    initial_sidebar_state="collapsed")
 
 UI_VERSION = 3
 # Increment when parsing, calculations, or workbook output semantics change so
 # a live session must regenerate results without migrating saved preferences.
-CALCULATION_REVISION = 1
+CALCULATION_REVISION = 3
 FIELDS = {
     "final_volume_ul": ("Final volume to be delivered to each well (µL)", "Before the well overage factor is applied."),
     "dna_to_reagent_ratio_ul_per_ug": ("Transfectant ratio (µL / µg DNA)", "Transfectant volume per microgram of DNA."),
@@ -251,16 +254,19 @@ def google_section():
     return snapshot, ready
 
 
-def show_result(result, config):
+def show_result(result, config, destination):
     artifacts = result["artifacts"]
     count = len(artifacts)
     label = "workbook" if count == 1 else "workbooks"
-    st.success(f"{count} {artifacts[0]['reagent']} {label} saved in {result['elapsed']:.2f} seconds.")
+    st.success(f"{count} {artifacts[0]['reagent']} {label} generated in {result['elapsed']:.2f} seconds.")
     a, b, c = st.columns(3)
     a.metric("Wells", result["wells"])
     b.metric("Plasmid entries", result["entries"])
     c.metric("Unique plasmids", result["plasmids"])
-    st.caption(f"Saved in {result['folder']}")
+    st.caption("Generate prepares the preview. Press Download below to save each workbook to the selected folder.")
+    can_save = bool(destination and destination.is_dir())
+    if not can_save:
+        st.info("Choose an existing folder above to enable Download.")
     if result["warnings"]:
         with st.expander(f"Review {len(result['warnings'])} warning(s)", expanded=True):
             for warning in result["warnings"]:
@@ -272,9 +278,24 @@ def show_result(result, config):
             if artifact.get("plate_path"):
                 st.caption(f"Plate layout: {artifact['plate_path']}")
             st.caption(f"Workbook: {artifact['name']}")
-            st.download_button(f"Download {artifact['reagent']} workbook", artifact["bytes"], file_name=artifact["name"],
-                               key="download_" + artifact["name"],
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", on_click="ignore")
+            if st.button(f"Download {artifact['reagent']} workbook", key="download_" + artifact["name"],
+                         disabled=not can_save):
+                artifact.pop("save_error", None)
+                try:
+                    artifact["saved"] = save_artifact(artifact, destination)
+                except Exception as exc:
+                    artifact["save_error"] = exc
+            if artifact.get("save_error"):
+                show_error(artifact["save_error"])
+                for warning in getattr(artifact["save_error"], "cleanup_warnings", []):
+                    st.warning(warning)
+            if artifact.get("saved"):
+                if (not artifact.get("save_error") and destination
+                        and Path(artifact["saved"]["path"]).parent == destination.resolve()):
+                    st.success("Workbook saved.")
+                st.caption(f"Last saved to: {artifact['saved']['path']}")
+                for warning in artifact["saved"]["warnings"]:
+                    st.warning(warning)
             summary = artifact["summary"]
             prepared_volume = config["final_volume_ul"] * config["well_overage_factor"]
             st.caption(f"Prepare {prepared_volume:.3f} µL per DNA-containing well, including well overage. "
@@ -388,7 +409,8 @@ def plate_section():
             else:
                 preview_path = plates[0]["path"] if plates else None
         wells, entries = previews.get(preview_path, (None, None))
-        st.html(plate_preview_html(entries, wells, embedded=True))
+        st.html(plate_preview_html(entries, wells, embedded=True,
+                                   reagent=st.session_state.reagent_choice))
     return plates, bool(plates) and not errors
 
 
@@ -398,8 +420,15 @@ def main():
     .block-container {padding-top: 4.5rem; padding-bottom:4rem; max-width:1120px;}
     h1 {letter-spacing:-.04em; font-weight:700;}
     .eyebrow {font-size:.75rem; letter-spacing:.16em; color:#237D70; font-weight:700;}
+    .app-brand {display:flex; align-items:center; gap:12px; margin-bottom:4px;}
+    .app-brand img {width:48px; height:48px; flex-shrink:0;}
     div[data-testid="stMetric"] {background:#EDF2ED; padding:14px 18px; border-radius:12px;}
-    </style><div class="eyebrow">PLATE PREPARATION · LOCAL WORKSPACE</div>""", unsafe_allow_html=True)
+    </style>""", unsafe_allow_html=True)
+    icon_data = base64.b64encode(APP_ICON.read_bytes()).decode("ascii")
+    st.markdown(
+        f'<div class="app-brand"><img src="data:image/png;base64,{icon_data}" '
+        'alt="Transfection Mix Maps icon"><div class="eyebrow">'
+        'PLATE PREPARATION · LOCAL WORKSPACE</div></div>', unsafe_allow_html=True)
     st.title("Generate transfection mix maps")
     st.caption(f"v{VERSION}")
     st.write("Connect your concentrations, choose up to five plates, and save Excel maps ready for the bench.")
@@ -432,6 +461,9 @@ def main():
             try:
                 selected = choose_output_folder(st.session_state.output_folder or str(Path.home()))
                 if selected:
+                    if selected != st.session_state.output_folder:
+                        for artifact in st.session_state.get("result", {}).get("artifacts", []):
+                            artifact.pop("save_error", None)
                     st.session_state.output_folder = selected
                     persist()
             except FolderPickerError as exc:
@@ -444,8 +476,7 @@ def main():
         else:
             st.caption("Choose an output folder for all selected plates." if multiple_plates else
                        "Select a plate CSV or choose an existing folder.")
-    st.caption("Each plate creates a separate workbook with a unique filename in the selected folder." if multiple_plates else
-               "Excel files are saved directly to the selected folder. You can change it above.")
+    st.caption("Generate previews the mix maps without saving files. Download saves each workbook directly to the selected folder.")
     if destination and not destination.is_dir():
         st.error("The selected folder is no longer available. Choose an existing folder.")
     if "save_error" in st.session_state:
@@ -456,13 +487,13 @@ def main():
         for field in FIELDS:
             configs[r][field] = st.session_state[f"{r}_{field}"]
     preferences()  # Retain hidden reagent settings when Streamlit removes their widgets.
-    ready = bool(plate_ready and sheet_ready and destination and destination.is_dir())
+    ready = bool(plate_ready and sheet_ready)
     fingerprint = hashlib.sha256(json.dumps({
         "calculation_revision": CALCULATION_REVISION,
         "plates": [{"path": p["path"], "name": p["name"], "hash": hashlib.sha256(p["bytes"]).hexdigest()} for p in plates],
         "snapshot": snapshot, "reagent": reagent,
         "config": configs[reagent],
-        "output": str(destination), "sheet_ready": sheet_ready,
+        "sheet_ready": sheet_ready,
     }, sort_keys=True).encode()).hexdigest()
     if st.session_state.get("result") and st.session_state.get("result_fingerprint") != fingerprint:
         st.session_state.pop("result", None)
@@ -475,16 +506,16 @@ def main():
             with st.spinner("Checking all plate inputs and building your workbooks…"):
                 result = generate_batch(plates, snapshot["tables"],
                                         f"Google Sheet: {snapshot['sheet_id']}", snapshot["fetched_at"],
-                                        [reagent], configs, str(destination))
+                                        [reagent], configs)
             st.session_state.result = result
             st.session_state.result_fingerprint = fingerprint
             persist()
         except Exception as exc:
             show_error(exc, no_output=True)
     if not ready:
-        st.caption("Confirm Google sign-in, load your Sheet, choose valid plate CSVs, and select an output folder to generate.")
+        st.caption("Confirm Google sign-in, load your Sheet, and choose valid plate CSVs to generate.")
     if st.session_state.get("result"):
-        show_result(st.session_state.result, configs[reagent])
+        show_result(st.session_state.result, configs[reagent], destination)
     st.divider()
     st.caption("Benjamin Pollak | brpollak@uscd.edu")
 

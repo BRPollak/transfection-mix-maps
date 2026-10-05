@@ -1,10 +1,13 @@
 """Regressions for separate L2000 recipes and unambiguous bench assignments."""
 
 import csv
+from decimal import Decimal
 from io import BytesIO, StringIO
 import re
 
 from openpyxl import load_workbook
+from openpyxl.cell.rich_text import CellRichText, TextBlock
+import pandas as pd
 import pytest
 
 import core
@@ -47,11 +50,44 @@ def well_cell(sheet, well):
     return matches[0]
 
 
-def mix_legend_cell(sheet, label):
+def mix_legend_cell(sheet, label, symbol=""):
+    heading = f"{label} {symbol}".rstrip()
     matches = [cell for row in sheet for cell in row
-               if isinstance(cell.value, str) and cell.value.startswith(label + " |")]
+               if isinstance(cell.value, str) and cell.value.startswith(heading + " |")]
     assert len(matches) == 1, f"Expected exactly one legend or recipe card for {label}"
     return matches[0]
+
+
+@pytest.mark.parametrize("entries", [None, pd.DataFrame()])
+def test_mass_grouping_without_entries_is_empty(entries):
+    assert core.group_dna_masses(entries) == []
+
+
+def test_shared_mass_groups_normalize_wells_and_preserve_exact_totals():
+    entries = pd.DataFrame([
+        {"Well": "a01", "Mass_ng": "0.1"}, {"Well": "A1", "Mass_ng": "0.2"},
+        {"Well": "A2", "Mass_ng": "0.3"}, {"Well": "A3", "Mass_ng": "0.3000001"},
+        {"Well": "G1", "Mass_ng": "0.3000001"}, {"Well": "G2", "Mass_ng": "0.3000001"},
+    ])
+    groups = core.group_dna_masses(entries)
+    assert groups == [
+        {"Number": 1, "Total DNA_ng": Decimal("0.3000001"), "Wells": ["A3", "G1", "G2"], "Symbol": "▲"},
+        {"Number": 2, "Total DNA_ng": Decimal("0.3"), "Wells": ["A1", "A2"], "Symbol": "●"},
+    ]
+    assert core.group_dna_masses(entries.iloc[::-1]) == groups
+
+
+def test_mass_grouping_ignores_nonpositive_and_nonfinite_masses():
+    entries = pd.DataFrame([{"Well": f"A{number}", "Mass_ng": mass}
+                            for number, mass in enumerate([100, 0, -100, float("nan"), float("inf"), None], 1)])
+    assert core.group_dna_masses(entries) == [
+        {"Number": 1, "Total DNA_ng": Decimal(100), "Wells": ["A1"], "Symbol": ""},
+    ]
+
+
+def test_more_than_five_mass_groups_get_distinct_number_markers():
+    entries = pd.DataFrame([{"Well": f"A{number}", "Mass_ng": number * 100} for number in range(1, 7)])
+    assert [group["Symbol"] for group in core.group_dna_masses(entries)] == [str(number) for number in range(1, 7)]
 
 
 def test_different_dna_totals_receive_the_correct_l2000_concentration():
@@ -75,6 +111,7 @@ def test_different_dna_totals_receive_the_correct_l2000_concentration():
         assert aliquot_reagent == pytest.approx(reagent)
         assert aliquot_reagent == pytest.approx(by_well.loc[well, "Reagent_uL"])
         assert by_well.loc[well, "Bulk transfectant mix"] == mix["Mix"]
+        assert by_well.loc[well, "Bulk mix symbol"] == mix["Symbol"]
 
 
 def test_groups_rank_by_well_count_then_physical_position_independent_of_input_order():
@@ -87,6 +124,7 @@ def test_groups_rank_by_well_count_then_physical_position_independent_of_input_o
     assert [mix["Wells"] for mix in bulk["mixes"]] == expected_wells
     assert [mix["Total DNA_ng"] for mix in bulk["mixes"]] == [500, 200, 100, 300, 400]
     assert [mix["Mix"] for mix in bulk["mixes"]] == [f"Bulk transfectant mix {n}" for n in range(1, 6)]
+    assert [mix["Symbol"] for mix in bulk["mixes"]] == list(core.BULK_MIX_SYMBOLS)
     _, reversed_summary, reversed_bulk, _ = calculate(list(reversed(rows)))
     assert reversed_bulk == bulk
     assert reversed_summary.set_index("Well")["Bulk transfectant mix"].to_dict() == summary.set_index("Well")["Bulk transfectant mix"].to_dict()
@@ -112,6 +150,7 @@ def test_empty_and_zero_mass_wells_do_not_consume_a_group_or_reagent():
     assert sum(mix["Bulk total_uL"] for mix in bulk["mixes"]) == pytest.approx(90)
     for well in ["A6", "A7"]:
         assert summary.set_index("Well").loc[well, "Bulk transfectant mix"] == ""
+        assert summary.set_index("Well").loc[well, "Bulk mix symbol"] == ""
         assert all(well not in mix["Wells"] for mix in bulk["mixes"])
 
 
@@ -156,7 +195,7 @@ def test_six_groups_in_one_plate_prevent_every_workbook_in_the_batch(tmp_path, m
 
     monkeypatch.setattr(core, "write_mix_map_workbook", unexpected_write)
     with pytest.raises(core.MixMapError, match="no output was made") as caught:
-        generate_batch(plates, STOCKS, "test", "test-time", ["L2000"], default_configs(), tmp_path)
+        generate_batch(plates, STOCKS, "test", "test-time", ["L2000"], default_configs())
     assert any("six-groups.csv" in detail for detail in caught.value.details)
     assert not list(tmp_path.iterdir())
 
@@ -164,8 +203,9 @@ def test_six_groups_in_one_plate_prevent_every_workbook_in_the_batch(tmp_path, m
 @pytest.mark.parametrize("group_count", [2, 5])
 def test_mix_map_and_recipe_sheet_identify_every_wells_recipe_and_aliquot(tmp_path, group_count):
     rows = [(f"A{n}", "A", n * 100) for n in range(1, group_count + 1)] + [("B1", "B", 100)]
+    config = default_configs()["L2000"]
     result = generate(plate_bytes(rows), "mixed.csv", STOCKS, "test", "test-time",
-                      ["L2000"], default_configs(), tmp_path)
+                      ["L2000"], default_configs())
     artifact = result["artifacts"][0]
     with BytesIO(artifact["bytes"]) as stream:
         workbook = load_workbook(stream)
@@ -173,25 +213,35 @@ def test_mix_map_and_recipe_sheet_identify_every_wells_recipe_and_aliquot(tmp_pa
             recipe_rows = sheet_records(workbook["Bulk transfectant mixes"])
             assert len(recipe_rows) == group_count
             summary = {row["Well"]: row for row in sheet_records(workbook["Well summary"])}
-            group_colors = set()
+            group_symbols, legend_fills, card_fills, well_fills = set(), set(), set(), set()
             for recipe, mix in zip(recipe_rows, artifact["bulk"]["mixes"]):
                 assert recipe["Mix"] == mix["Mix"]
+                assert recipe["Symbol"] == mix["Symbol"]
                 assert recipe["Total DNA_ng"] == mix["Total DNA_ng"]
-                legend = mix_legend_cell(workbook["Mix Map"], mix["Mix"])
-                card = mix_legend_cell(workbook["Bulk transfectant mixes"], mix["Mix"])
-                assert legend.fill.fgColor == card.fill.fgColor
-                group_colors.add(legend.fill.fgColor.rgb)
+                legend = mix_legend_cell(workbook["Mix Map"], mix["Mix"], mix["Symbol"])
+                card = mix_legend_cell(workbook["Bulk transfectant mixes"], mix["Mix"], mix["Symbol"])
+                group_symbols.add(mix["Symbol"])
+                legend_fills.add(legend.fill.fgColor.rgb)
+                card_fills.add(card.fill.fgColor.rgb)
+                assert (f"Add {core.format_volume_ul(mix['Bulk reagent_uL'])} {config['reagent_label']} to "
+                        f"{core.format_volume_ul(mix['Bulk diluent_uL'])} {config['diluent_label']}.") in legend.value
+                assert "Add 15.00 uL to each assigned DNA mix." in legend.value
+                assert legend.alignment.wrap_text
+                assert workbook["Mix Map"].row_dimensions[legend.row].height >= 30
                 for field in ["Bulk reagent_uL", "Bulk diluent_uL", "Bulk total_uL", "Per-well transfection mix_uL"]:
                     assert recipe[field] == pytest.approx(mix[field])
                 for well in mix["Wells"]:
                     assert well in str(recipe["Wells"])
                     cell = well_cell(workbook["Mix Map"], well)
-                    assert mix["Mix"] in cell.value
+                    assert mix["Mix"] not in cell.value
+                    assert cell.value.splitlines()[-1] == mix["Symbol"]
                     assert re.search(r"Add\s+15(?:\.0+)?\s*(?:µL|uL)", cell.value)
                     assert cell.alignment.wrap_text
-                    assert cell.fill.fgColor == legend.fill.fgColor
+                    well_fills.add(cell.fill.fgColor.rgb)
                     assert summary[well]["Bulk transfectant mix"] == mix["Mix"]
-            assert len(group_colors) == group_count
+                    assert summary[well]["Bulk mix symbol"] == mix["Symbol"]
+            assert len(group_symbols) == group_count
+            assert len(legend_fills) == len(card_fills) == len(well_fills) == 1
         finally:
             workbook.close()
 
@@ -199,27 +249,68 @@ def test_mix_map_and_recipe_sheet_identify_every_wells_recipe_and_aliquot(tmp_pa
 def test_each_plate_restarts_mix_numbering_and_has_its_own_recipes(tmp_path):
     plates = [{"name": "one.csv", "bytes": plate_bytes([("A1", "A", 100), ("A2", "A", 300)])},
               {"name": "two.csv", "bytes": plate_bytes([("B1", "A", 500)])}]
-    result = generate_batch(plates, STOCKS, "test", "test-time", ["L2000"], default_configs(), tmp_path)
+    result = generate_batch(plates, STOCKS, "test", "test-time", ["L2000"], default_configs())
     assert len(result["artifacts"]) == 2
     for artifact, expected_masses in zip(result["artifacts"], [[100, 300], [500]]):
         mixes = artifact["bulk"]["mixes"]
         assert [mix["Mix"] for mix in mixes] == [f"Bulk transfectant mix {n}" for n in range(1, len(mixes) + 1)]
         assert [mix["Total DNA_ng"] for mix in mixes] == expected_masses
+        assert [mix["Symbol"] for mix in mixes] == (["▲", "●"] if len(mixes) > 1 else [""])
         workbook = load_workbook(BytesIO(artifact["bytes"]))
         try:
             assert len(sheet_records(workbook["Bulk transfectant mixes"])) == len(mixes)
+            if len(mixes) == 1:
+                assert mixes[0]["Mix"] in well_cell(workbook["Mix Map"], "B1").value
+                assert not any(symbol in cell.value for sheet in workbook for row in sheet for cell in row
+                               if isinstance(cell.value, str) for symbol in core.BULK_MIX_SYMBOLS)
         finally:
             workbook.close()
+
+
+@pytest.mark.parametrize("group_count", [1, 2])
+def test_only_multi_mix_markers_use_large_printable_rich_text(tmp_path, group_count):
+    rows = [(f"A{number}", "A", number * 100) for number in range(1, group_count + 1)]
+    result = generate(plate_bytes(rows), "markers.csv", STOCKS, "test", "test-time",
+                      ["L2000"], default_configs())
+    data = result["artifacts"][0]["bytes"]
+    plain = load_workbook(BytesIO(data))
+    rich = load_workbook(BytesIO(data), rich_text=True)
+    try:
+        for mix in result["artifacts"][0]["bulk"]["mixes"]:
+            for well in mix["Wells"]:
+                cell = well_cell(plain["Mix Map"], well)
+                styled = rich["Mix Map"][cell.coordinate]
+                assert str(styled.value) == cell.value
+                assert styled.font.name == "Arial"
+                assert styled.font.sz == 8.5
+                if group_count == 1:
+                    assert isinstance(styled.value, str)
+                    continue
+                assert isinstance(styled.value, CellRichText)
+                marker = styled.value[-1]
+                assert isinstance(marker, TextBlock)
+                assert marker.text == mix["Symbol"]
+                assert marker.font.rFont == "Arial"
+                assert marker.font.sz == 16
+                assert marker.font.b is True
+                body_lines = len(cell.value.splitlines()) - 1
+                assert rich["Mix Map"].row_dimensions[cell.row].height >= 14 + 12 * body_lines + 20
+    finally:
+        plain.close()
+        rich.close()
 
 
 def test_lt1_has_no_group_limit_or_bulk_recipes(tmp_path):
     rows = [(f"A{n}", "A", n * 100) for n in range(1, 7)]
     result = generate(plate_bytes(rows), "lt1.csv", STOCKS, "test", "test-time",
-                      ["LT1"], default_configs(), tmp_path)
+                      ["LT1"], default_configs())
     artifact = result["artifacts"][0]
     assert artifact["bulk"] == {}
     workbook = load_workbook(BytesIO(artifact["bytes"]))
     try:
         assert "Bulk transfectant mixes" not in workbook.sheetnames
+        assert "Bulk mix symbol" not in [cell.value for cell in workbook["Well summary"][1]]
+        assert not any(symbol in cell.value for row in workbook["Mix Map"] for cell in row
+                       if isinstance(cell.value, str) for symbol in core.BULK_MIX_SYMBOLS)
     finally:
         workbook.close()

@@ -62,10 +62,19 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
         window.delegate = self
         window.center()
 
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.3"
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
         let versionLabel = NSTextField(labelWithString: "TRANSFECTION MIX MAPS · VERSION \(version)")
         versionLabel.font = .systemFont(ofSize: 11, weight: .semibold)
         versionLabel.textColor = .secondaryLabelColor
+        let appIcon = NSImageView()
+        appIcon.image = NSApp.applicationIconImage
+        appIcon.imageScaling = .scaleProportionallyUpOrDown
+        appIcon.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        appIcon.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        let identity = NSStackView(views: [appIcon, versionLabel])
+        identity.orientation = .horizontal
+        identity.alignment = .centerY
+        identity.spacing = 10
 
         statusLabel = NSTextField(wrappingLabelWithString: "Starting your local app…")
         statusLabel.font = .systemFont(ofSize: 22, weight: .semibold)
@@ -85,7 +94,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .vertical)
-        let stack = NSStackView(views: [versionLabel, statusLabel, detailLabel, spacer, buttons])
+        let stack = NSStackView(views: [identity, statusLabel, detailLabel, spacer, buttons])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 14

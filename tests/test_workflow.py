@@ -9,7 +9,7 @@ from openpyxl import load_workbook
 import core
 import workflow
 from sources import read_plate
-from workflow import default_configs, generate, generate_batch
+from workflow import default_configs, generate, generate_batch, save_artifact
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
@@ -77,7 +77,7 @@ def test_generation_ignores_unrelated_sheet_format_problems(tmp_path):
         "Notes": [["Date", "Operator"], ["Oct 4", "Lab"]],
         "Empty": [],
     }
-    result = generate(plate, "plate.csv", tables, "test", "test", ["LT1"], default_configs(), tmp_path)
+    result = generate(plate, "plate.csv", tables, "test", "test", ["LT1"], default_configs())
     assert len(result["artifacts"]) == 1
     assert not result["warnings"]
     workbook = load_workbook(BytesIO(result["artifacts"][0]["bytes"]))
@@ -91,7 +91,7 @@ def test_generation_reports_all_unusable_plate_plasmids_and_makes_no_output(tmp_
     tables = {"Stocks": [["Plasmid", "Concentration"], ["Blank", ""], ["Invalid", "text100"],
                           ["Conflict", "50"], ["Conflict", "60"]]}
     with pytest.raises(core.MixMapError, match="no output was made") as caught:
-        generate(plate, "plate.csv", tables, "test", "test", ["LT1"], default_configs(), tmp_path)
+        generate(plate, "plate.csv", tables, "test", "test", ["LT1"], default_configs())
     assert len(caught.value.details) == 4
     assert any("Absent: not found" in detail for detail in caught.value.details)
     assert any("Blank: concentration is missing" in detail for detail in caught.value.details)
@@ -108,7 +108,7 @@ def test_generation_reports_all_unusable_plate_plasmids_and_makes_no_output(tmp_
 def test_used_plasmid_requires_a_usable_concentration_column(tmp_path, tables, reason):
     plate = b"Well,Plasmid,Mass (ng)\nA1,A,100\n"
     with pytest.raises(core.MixMapError) as caught:
-        generate(plate, "plate.csv", tables, "test", "test", ["LT1"], default_configs(), tmp_path)
+        generate(plate, "plate.csv", tables, "test", "test", ["LT1"], default_configs())
     assert len(caught.value.details) == 1
     assert caught.value.details[0].startswith("A:")
     assert reason in caught.value.details[0]
@@ -161,7 +161,7 @@ def test_nonfinite_dna_mass_does_not_publish_output(tmp_path):
     plate = b"Well,Plasmid,Mass (ng)\nA1,A,1e999\n"
     tables = {"Stocks": [["Plasmid", "Concentration"], ["A", "50"]]}
     with pytest.raises(core.MixMapError, match="unreadable DNA mass"):
-        generate(plate, "plate.csv", tables, "test", "test-time", ["LT1"], default_configs(), tmp_path)
+        generate(plate, "plate.csv", tables, "test", "test-time", ["LT1"], default_configs())
     assert not list(tmp_path.iterdir())
 
 
@@ -170,27 +170,34 @@ def test_impossible_volume_does_not_publish_partial_run(tmp_path):
     configs = default_configs()
     configs["LT1"]["final_volume_ul"] = 0.1
     with pytest.raises(core.MixMapError, match="more volume"):
-        generate(plate, "plate.csv", tables, "test", "test-time", ["LT1"], configs, tmp_path)
+        generate(plate, "plate.csv", tables, "test", "test-time", ["LT1"], configs)
     assert not list(tmp_path.iterdir())
 
 
 @pytest.mark.parametrize("reagent", ["LT1", "L2000"])
-def test_workbooks_and_repeated_runs(tmp_path, reagent):
+def test_workbooks_and_repeated_runs_stay_in_memory(tmp_path, monkeypatch, reagent):
     plate, tables = inputs()
-    args = (plate, "plate.csv", tables, "test source", "2026-10-04T12:00:00-07:00", [reagent], default_configs(), tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    def unexpected_filesystem_output(*args, **kwargs):
+        raise AssertionError("Generation must not stage or publish filesystem workbooks")
+
+    monkeypatch.setattr(workflow.tempfile, "mkstemp", unexpected_filesystem_output)
+    monkeypatch.setattr(workflow.os, "link", unexpected_filesystem_output)
+    monkeypatch.setattr(core.os, "makedirs", unexpected_filesystem_output)
+    args = (plate, "plate.csv", tables, "test source", "2026-10-04T12:00:00-07:00", [reagent], default_configs())
     first = generate(*args)
-    first_file = Path(first["artifacts"][0]["path"])
-    first_bytes = first_file.read_bytes()
+    first_bytes = first["artifacts"][0]["bytes"]
     second = generate(*args)
-    assert first["folder"] == second["folder"] == str(tmp_path)
+    assert "folder" not in first
+    assert "folder" not in second
     assert first["artifacts"][0]["name"] != second["artifacts"][0]["name"]
-    assert first_file.read_bytes() == first_bytes
+    assert first["artifacts"][0]["bytes"] == first_bytes
     assert len(first["artifacts"]) == 1
     assert first["artifacts"][0]["reagent"] == reagent
-    saved = list(tmp_path.iterdir())
-    assert len(saved) == 2
-    assert all(path.is_file() and path.suffix == ".xlsx" for path in saved)
+    assert not list(tmp_path.iterdir())
     for artifact in first["artifacts"]:
+        assert "path" not in artifact
         wb = load_workbook(BytesIO(artifact["bytes"]))
         assert {"Mix Map", "Per-well details", "Concentrations used", "Well summary", "Run config"} <= set(wb.sheetnames)
         assert wb["Mix Map"].page_setup.orientation == "landscape"
@@ -200,18 +207,76 @@ def test_workbooks_and_repeated_runs(tmp_path, reagent):
         assert config["Concentrations loaded/refreshed at"] == args[4]
         assert config["Duplicate concentration policy"] == "error"
         assert len(config["Concentration snapshot SHA256"]) == 64
+        wb.close()
 
 
-def test_missing_output_folder_is_not_created(tmp_path):
+def test_download_saves_only_selected_workbook_and_exact_generated_bytes(tmp_path):
     plate, tables = inputs()
+    result = generate_batch([{"name": name, "bytes": plate} for name in ["one.csv", "two.csv"]],
+                            tables, "test", "test", ["LT1"], default_configs())
+    selected = tmp_path / "selected"
+    downloads = tmp_path / "Downloads"
+    selected.mkdir()
+    downloads.mkdir()
+    artifact = result["artifacts"][1]
+    initial_keys = set(artifact)
+    saved = save_artifact(artifact, selected)
+    destination = Path(saved["path"])
+    assert destination == selected / artifact["name"]
+    assert destination.read_bytes() == artifact["bytes"]
+    assert saved["warnings"] == []
+    assert set(artifact) == initial_keys
+    assert "path" not in artifact
+    assert list(selected.iterdir()) == [destination]
+    assert not list(downloads.iterdir())
+    workbook = load_workbook(destination)
+    assert "Mix Map" in workbook.sheetnames
+    workbook.close()
+
+
+def test_missing_output_folder_is_rejected_only_on_download_and_not_created(tmp_path):
+    plate, tables = inputs()
+    artifact = generate(plate, "plate.csv", tables, "test", "test", ["LT1"], default_configs())["artifacts"][0]
     missing = tmp_path / "missing" / "nested"
     with pytest.raises(core.MixMapError, match="existing output folder"):
-        generate(plate, "plate.csv", tables, "test", "test", ["LT1"], default_configs(), missing)
+        save_artifact(artifact, missing)
+    assert artifact["bytes"]
     assert not list(tmp_path.iterdir())
 
 
-def test_publication_collision_preserves_existing_file_and_retries(tmp_path, monkeypatch):
+@pytest.mark.parametrize("selection", [None, "", "   "])
+def test_download_requires_an_explicit_folder(tmp_path, monkeypatch, selection):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(core.MixMapError, match="existing output folder"):
+        save_artifact({"name": "map.xlsx", "bytes": b"workbook"}, selection)
+    assert not list(tmp_path.iterdir())
+
+
+def test_download_revalidates_folder_after_generation(tmp_path):
     plate, tables = inputs()
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    artifact = generate(plate, "plate.csv", tables, "test", "test", ["LT1"], default_configs())["artifacts"][0]
+    selected.rmdir()
+    with pytest.raises(core.MixMapError, match="existing output folder"):
+        save_artifact(artifact, selected)
+    assert not selected.exists()
+
+
+def test_repeated_downloads_preserve_previous_file(tmp_path):
+    artifact = {"name": "map.xlsx", "bytes": b"generated bytes"}
+    existing = tmp_path / artifact["name"]
+    existing.write_bytes(b"prior workbook")
+    first = save_artifact(artifact, tmp_path)
+    second = save_artifact(artifact, tmp_path)
+    assert existing.read_bytes() == b"prior workbook"
+    assert first["path"] != second["path"]
+    assert Path(first["path"]).read_bytes() == Path(second["path"]).read_bytes() == artifact["bytes"]
+    assert len(list(tmp_path.iterdir())) == 3
+
+
+def test_publication_collision_preserves_existing_file_and_retries(tmp_path, monkeypatch):
+    artifact = {"name": "map.xlsx", "bytes": b"generated bytes"}
     real_link = workflow.os.link
     collisions = []
 
@@ -222,11 +287,11 @@ def test_publication_collision_preserves_existing_file_and_retries(tmp_path, mon
         return real_link(source, destination)
 
     monkeypatch.setattr(workflow.os, "link", collide_once)
-    result = generate(plate, "plate.csv", tables, "test", "test", ["LT1"], default_configs(), tmp_path)
+    result = save_artifact(artifact, tmp_path)
     assert collisions[0].read_bytes() == b"another process saved this file"
-    saved = Path(result["artifacts"][0]["path"])
+    saved = Path(result["path"])
     assert saved != collisions[0]
-    assert saved.read_bytes() == result["artifacts"][0]["bytes"]
+    assert saved.read_bytes() == artifact["bytes"]
     assert len(list(tmp_path.iterdir())) == 2
 
 
@@ -235,7 +300,7 @@ def test_invalid_reagent_selection_does_not_publish_output(tmp_path, reagents):
     plate, tables = inputs()
     with pytest.raises(core.MixMapError, match="exactly one transfectant"):
         generate(plate, "plate.csv", tables, "test", "test", reagents,
-                 default_configs(), tmp_path)
+                 default_configs())
     assert not list(tmp_path.iterdir())
 
 
@@ -246,7 +311,7 @@ def test_batch_creates_distinct_workbooks_for_same_named_plates(tmp_path):
               {"name": "plate.csv", "bytes": second, "path": "/second/plate.csv"}]
     tables = {"A stocks": [["Plasmid", "Concentration"], ["A", "50"]],
               "B stocks": [["Plasmid", "Concentration"], ["B", "100"]]}
-    result = generate_batch(plates, tables, "test", "test-time", ["LT1"], default_configs(), tmp_path)
+    result = generate_batch(plates, tables, "test", "test-time", ["LT1"], default_configs())
     assert result["plate_count"] == 2
     assert result["wells"] == 2
     assert result["entries"] == 3
@@ -258,7 +323,7 @@ def test_batch_creates_distinct_workbooks_for_same_named_plates(tmp_path):
     assert result["artifacts"][0]["summary"]["Well"].tolist() == ["A1"]
     assert result["artifacts"][1]["summary"]["Well"].tolist() == ["B2"]
     for artifact, plate in zip(result["artifacts"], plates):
-        assert Path(artifact["path"]).read_bytes() == artifact["bytes"]
+        assert "path" not in artifact
         workbook = load_workbook(BytesIO(artifact["bytes"]))
         config = dict(workbook["Run config"].iter_rows(min_row=2, values_only=True))
         assert config["Plate CSV path"] == plate["path"]
@@ -266,17 +331,17 @@ def test_batch_creates_distinct_workbooks_for_same_named_plates(tmp_path):
     first_workbook = load_workbook(BytesIO(result["artifacts"][0]["bytes"]))
     stocks = first_workbook["Concentrations used"].iter_rows(min_row=2, values_only=True)
     assert [(row[0], row[2], row[3]) for row in stocks] == [("A", "A stocks", 2), ("B", "B stocks", 2)]
-    assert len(list(tmp_path.iterdir())) == 2
+    assert not list(tmp_path.iterdir())
 
 
 def test_batch_accepts_five_plates(tmp_path):
     count = 5
     plate, tables = inputs()
     result = generate_batch([{"name": f"plate-{index}.csv", "bytes": plate} for index in range(count)],
-                            tables, "test", "test-time", ["LT1"], default_configs(), tmp_path)
+                            tables, "test", "test-time", ["LT1"], default_configs())
     assert result["plate_count"] == count
     assert len(result["artifacts"]) == count
-    assert len(list(tmp_path.iterdir())) == count
+    assert not list(tmp_path.iterdir())
 
 
 @pytest.mark.parametrize("count", [0, 6])
@@ -284,7 +349,7 @@ def test_batch_size_limits_are_enforced_before_output(tmp_path, count):
     plate, tables = inputs()
     with pytest.raises(core.MixMapError, match="between 1 and 5"):
         generate_batch([{"name": f"plate-{index}.csv", "bytes": plate} for index in range(count)],
-                       tables, "test", "test-time", ["LT1"], default_configs(), tmp_path)
+                       tables, "test", "test-time", ["LT1"], default_configs())
     assert not list(tmp_path.iterdir())
 
 
@@ -301,7 +366,7 @@ def test_batch_collects_plate_validation_errors_without_writing_any_workbooks(tm
 
     monkeypatch.setattr(core, "write_mix_map_workbook", unexpected_write)
     with pytest.raises(core.MixMapError, match="no output was made") as caught:
-        generate_batch(plates, tables, "test", "test-time", ["LT1"], default_configs(), tmp_path)
+        generate_batch(plates, tables, "test", "test-time", ["LT1"], default_configs())
     details = "\n".join(caught.value.details)
     assert "missing.csv (plate 2): Absent: not found" in details
     assert "missing.csv (plate 2): Blank: concentration is missing" in details
@@ -310,46 +375,26 @@ def test_batch_collects_plate_validation_errors_without_writing_any_workbooks(tm
     assert not list(tmp_path.iterdir())
 
 
-def test_batch_staging_failure_removes_all_temporaries_and_preserves_prior_outputs(tmp_path, monkeypatch):
+def test_batch_generation_failure_never_writes_a_workbook(tmp_path, monkeypatch):
     plate, tables = inputs()
     existing = tmp_path / "previous.xlsx"
     existing.write_bytes(b"prior output")
     real_write = core.write_mix_map_workbook
     writes = []
 
-    def fail_second_write(path, *args):
-        writes.append(path)
+    def fail_second_write(stream, *args):
+        assert isinstance(stream, BytesIO)
+        writes.append(stream)
         if len(writes) == 2:
-            path.write_bytes(b"partial")
-            raise OSError("second workbook could not be written")
-        return real_write(path, *args)
+            stream.write(b"partial")
+            raise OSError("second workbook could not be generated")
+        return real_write(stream, *args)
 
     monkeypatch.setattr(core, "write_mix_map_workbook", fail_second_write)
     with pytest.raises(OSError, match="second workbook"):
         generate_batch([{"name": name, "bytes": plate} for name in ["one.csv", "two.csv"]],
-                       tables, "test", "test-time", ["LT1"], default_configs(), tmp_path)
-    assert existing.read_bytes() == b"prior output"
-    assert list(tmp_path.iterdir()) == [existing]
-
-
-def test_batch_publication_failure_rolls_back_only_its_own_outputs(tmp_path, monkeypatch):
-    plate, tables = inputs()
-    existing = tmp_path / "previous.xlsx"
-    existing.write_bytes(b"prior output")
-    real_link = workflow.os.link
-    links = []
-
-    def fail_second_publication(source, destination):
-        links.append(destination)
-        if len(links) == 2:
-            assert links[0].exists()
-            raise PermissionError("second workbook could not be published")
-        return real_link(source, destination)
-
-    monkeypatch.setattr(workflow.os, "link", fail_second_publication)
-    with pytest.raises(PermissionError, match="second workbook"):
-        generate_batch([{"name": name, "bytes": plate} for name in ["one.csv", "two.csv"]],
-                       tables, "test", "test-time", ["LT1"], default_configs(), tmp_path)
+                       tables, "test", "test-time", ["LT1"], default_configs())
+    assert len(writes) == 2
     assert existing.read_bytes() == b"prior output"
     assert list(tmp_path.iterdir()) == [existing]
 
@@ -358,7 +403,7 @@ def test_batch_warnings_identify_their_plate(tmp_path):
     plates = [{"name": "small.csv", "bytes": b"Well,Plasmid,Mass (ng)\nA1,A,1\n"},
               {"name": "normal.csv", "bytes": b"Well,Plasmid,Mass (ng)\nA1,A,100\n"}]
     tables = {"Stocks": [["Plasmid", "Concentration"], ["A", "100"]]}
-    result = generate_batch(plates, tables, "test", "test-time", ["LT1"], default_configs(), tmp_path)
+    result = generate_batch(plates, tables, "test", "test-time", ["LT1"], default_configs())
     assert result["warnings"]
     assert all(warning.startswith("small.csv (plate 1): ") for warning in result["warnings"])
     assert "plate_path" not in result["artifacts"][0]
@@ -366,42 +411,10 @@ def test_batch_warnings_identify_their_plate(tmp_path):
     assert "Warnings" in workbook.sheetnames
 
 
-def test_successful_batch_reports_temporary_cleanup_failure_as_warning(tmp_path, monkeypatch):
-    plate, tables = inputs()
+def test_successful_download_reports_temporary_cleanup_failure_as_warning(tmp_path, monkeypatch):
+    artifact = {"name": "map.xlsx", "bytes": b"generated bytes"}
     real_unlink = Path.unlink
     cleanup_attempts = []
-
-    def fail_first_temporary_cleanup(path, *args, **kwargs):
-        if path.parent == tmp_path and path.name.startswith(".mixmap-"):
-            cleanup_attempts.append(path)
-            if len(cleanup_attempts) == 1:
-                raise PermissionError("temporary file is locked")
-        return real_unlink(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "unlink", fail_first_temporary_cleanup)
-    result = generate_batch([{"name": name, "bytes": plate} for name in ["one.csv", "two.csv"]],
-                            tables, "test", "test-time", ["LT1"], default_configs(), tmp_path)
-    assert len(result["artifacts"]) == 2
-    assert all(Path(artifact["path"]).read_bytes() == artifact["bytes"] for artifact in result["artifacts"])
-    assert len(cleanup_attempts) == 2
-    assert cleanup_attempts[0].exists()
-    assert not cleanup_attempts[1].exists()
-    assert any("Workbooks were saved" in warning and str(cleanup_attempts[0]) in warning
-               for warning in result["warnings"])
-
-
-def test_temporary_cleanup_failure_does_not_mask_primary_save_error(tmp_path, monkeypatch):
-    plate, tables = inputs()
-    real_unlink = Path.unlink
-    real_write = core.write_mix_map_workbook
-    primary_error = OSError("second workbook could not be written")
-    writes, cleanup_attempts = [], []
-
-    def fail_second_write(path, *args):
-        writes.append(path)
-        if len(writes) == 2:
-            raise primary_error
-        return real_write(path, *args)
 
     def fail_temporary_cleanup(path, *args, **kwargs):
         if path.parent == tmp_path and path.name.startswith(".mixmap-"):
@@ -409,54 +422,64 @@ def test_temporary_cleanup_failure_does_not_mask_primary_save_error(tmp_path, mo
             raise PermissionError("temporary file is locked")
         return real_unlink(path, *args, **kwargs)
 
-    monkeypatch.setattr(core, "write_mix_map_workbook", fail_second_write)
     monkeypatch.setattr(Path, "unlink", fail_temporary_cleanup)
-    with pytest.raises(OSError, match="second workbook") as caught:
-        generate_batch([{"name": name, "bytes": plate} for name in ["one.csv", "two.csv"]],
-                       tables, "test", "test-time", ["LT1"], default_configs(), tmp_path)
+    result = save_artifact(artifact, tmp_path)
+    assert Path(result["path"]).read_bytes() == artifact["bytes"]
+    assert len(cleanup_attempts) == 1
+    assert cleanup_attempts[0].exists()
+    assert any("Workbook was saved" in warning and str(cleanup_attempts[0]) in warning
+               for warning in result["warnings"])
+
+
+@pytest.mark.parametrize("failure_stage", ["write", "publish"])
+def test_failed_download_cleans_up_and_preserves_existing_files(tmp_path, monkeypatch, failure_stage):
+    artifact = {"name": "map.xlsx", "bytes": b"generated bytes"}
+    existing = tmp_path / "previous.xlsx"
+    existing.write_bytes(b"prior output")
+
+    def fail(*args, **kwargs):
+        raise PermissionError("download failed")
+
+    if failure_stage == "write":
+        monkeypatch.setattr(workflow.os, "fsync", fail)
+    else:
+        monkeypatch.setattr(workflow.os, "link", fail)
+    with pytest.raises(PermissionError, match="download failed"):
+        save_artifact(artifact, tmp_path)
+    assert existing.read_bytes() == b"prior output"
+    assert list(tmp_path.iterdir()) == [existing]
+    assert "path" not in artifact
+
+
+def test_temporary_cleanup_failure_does_not_mask_primary_save_error(tmp_path, monkeypatch):
+    artifact = {"name": "map.xlsx", "bytes": b"generated bytes"}
+    real_unlink = Path.unlink
+    primary_error = PermissionError("workbook could not be published")
+    cleanup_attempts = []
+
+    def fail_publication(*args, **kwargs):
+        raise primary_error
+
+    def fail_temporary_cleanup(path, *args, **kwargs):
+        if path.parent == tmp_path and path.name.startswith(".mixmap-"):
+            cleanup_attempts.append(path)
+            raise PermissionError("temporary file is locked")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(workflow.os, "link", fail_publication)
+    monkeypatch.setattr(Path, "unlink", fail_temporary_cleanup)
+    with pytest.raises(PermissionError, match="workbook could not be published") as caught:
+        save_artifact(artifact, tmp_path)
     assert caught.value is primary_error
-    assert len(cleanup_attempts) == 2
-    assert len(caught.value.cleanup_warnings) == 2
+    assert len(cleanup_attempts) == 1
+    assert len(caught.value.cleanup_warnings) == 1
+    assert str(cleanup_attempts[0]) in caught.value.cleanup_warnings[0]
     assert not getattr(caught.value, "outputs_created", False)
     assert all(path.name.startswith(".mixmap-") for path in tmp_path.iterdir())
 
 
-@pytest.mark.parametrize("failure_operation", ["unlink", "lstat"])
-def test_incomplete_batch_rollback_reports_remaining_files_and_continues_cleanup(tmp_path, monkeypatch,
-                                                                               failure_operation):
-    plate, tables = inputs()
-    existing = tmp_path / "previous.xlsx"
-    existing.write_bytes(b"prior output")
-    real_link = workflow.os.link
-    real_operation = getattr(Path, failure_operation)
-    links, rollback_attempts = [], []
-    primary_error = PermissionError("third workbook could not be published")
-
-    def fail_third_publication(source, destination):
-        links.append(destination)
-        if len(links) == 3:
-            raise primary_error
-        return real_link(source, destination)
-
-    def fail_first_output_cleanup(path, *args, **kwargs):
-        if path in links:
-            rollback_attempts.append(path)
-            if path == links[0]:
-                raise PermissionError("first output is locked")
-        return real_operation(path, *args, **kwargs)
-
-    monkeypatch.setattr(workflow.os, "link", fail_third_publication)
-    monkeypatch.setattr(Path, failure_operation, fail_first_output_cleanup)
-    with pytest.raises(core.MixMapError, match="output files may remain") as caught:
-        generate_batch([{"name": name, "bytes": plate} for name in ["one.csv", "two.csv", "three.csv"]],
-                       tables, "test", "test-time", ["LT1"], default_configs(), tmp_path)
-    assert caught.value.outputs_created is True
-    assert caught.value.remaining_paths == [str(links[0])]
-    assert caught.value.__cause__ is primary_error
-    assert links[0].exists()
-    assert not links[1].exists()
-    assert not links[2].exists()
-    assert links[:2] == rollback_attempts
-    assert existing.read_bytes() == b"prior output"
-    assert set(tmp_path.iterdir()) == {existing, links[0]}
-    assert all("no output" not in text.lower() for text in [caught.value.title, *caught.value.details])
+@pytest.mark.parametrize("name", ["../escape.xlsx", "/absolute.xlsx", "nested/map.xlsx", "nested\\map.xlsx", "", ".."])
+def test_download_rejects_unsafe_names(tmp_path, name):
+    with pytest.raises(core.MixMapError, match="workbook is unavailable"):
+        save_artifact({"name": name, "bytes": b"generated bytes"}, tmp_path)
+    assert not list(tmp_path.iterdir())
