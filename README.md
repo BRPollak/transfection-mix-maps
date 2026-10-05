@@ -1,18 +1,17 @@
-# Transfection Mix Maps · v1.0.1
+# Transfection Mix Maps · v1.0.3
 
 Create Excel transfection mix maps for **LT1** or **L2000** from plate-layout
 CSVs and DNA concentrations in Google Sheets. Preview up to five plates and
 save a separate workbook for each one.
 
-**v1.0.1 is a source update.** No v1.0.1 installer has been built or published.
-Run this version using [BUILDING.md](BUILDING.md). The currently published
-installer is **v1.0.0**, for Apple Silicon Macs running macOS 14 or later, and
-includes Python and all dependencies. It does not include the plate-type
-features described below.
+**v1.0.3** includes all six plate types and updated printable Excel maps with
+bold well identifiers, grayscale styling, and pipette-aware volume rounding.
+The self-contained installer is for Apple Silicon Macs running macOS 14 or
+later and includes Python and all dependencies.
 
-## Install or update the published v1.0.0 app
+## Install or update v1.0.3
 
-1. [Download the v1.0.0 installer](https://github.com/BRPollak/transfection-mix-maps/releases/download/v1.0.0/Transfection-Mix-Maps-1.0.0-arm64.pkg).
+1. [Download the v1.0.3 installer](https://github.com/BRPollak/transfection-mix-maps/releases/download/v1.0.3/Transfection-Mix-Maps-1.0.3-arm64.pkg).
 2. Quit **Transfection Mix Maps** if it is running.
 3. Open the `.pkg` and follow the Installer prompts.
 4. Open **Transfection Mix Maps** from **Applications**.

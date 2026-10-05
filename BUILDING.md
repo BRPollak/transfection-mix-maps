@@ -3,9 +3,9 @@
 The installed Mac app includes Python and its dependencies. These instructions
 are for working on the source or building an installer.
 
-The source is **v1.0.1**. This update has no built or published installer; the
-available GitHub installer remains **v1.0.0**. The build commands below describe
-how to create a future v1.0.1 package.
+The current source and installer are **v1.0.3**. The installer is self-contained
+and supports Apple Silicon Macs running macOS 14 or later. The build commands
+below create the matching v1.0.3 package.
 
 ## Run from source
 
@@ -47,8 +47,8 @@ production dependencies:
 ```sh
 UV_PROJECT_ENVIRONMENT=build/package-env uv sync --locked --no-dev --python 3.12
 build/package-env/bin/python packaging/build_macos.py \
-  --staging build/v1.0.1/staging \
-  --pkg dist/v1.0.1/Transfection-Mix-Maps-1.0.1-arm64.pkg
+  --staging build/v1.0.3/staging \
+  --pkg dist/v1.0.3/Transfection-Mix-Maps-1.0.3-arm64.pkg
 ```
 
 Use fresh staging and output paths for each rebuild; existing outputs are not

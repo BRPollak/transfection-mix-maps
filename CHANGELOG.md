@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.3 — October 5, 2026
+
+- Bold the well identifier in each printable recipe and use grayscale throughout
+  Excel workbooks. Keep DNA wells lightest, empty wells darker, and row/column
+  labels slightly darker; preserve bulk-mix symbols and plate geometry.
+- Apply pipette-aware volume rounding to Mix Maps and printable bulk recipes,
+  including preparation instructions and warning examples. Use increments of
+  0.002, 0.01, 0.02, 0.2, or 1 µL according to the original volume, with exact
+  halfway values rounded upward. Calculations and supporting numeric tables
+  retain their existing precision.
+- Remove the grid's "Row" corner label and concentration-source text from Mix
+  Map subtitles. Retain source provenance in supporting sheets.
+- Release a self-contained v1.0.3 installer for Apple Silicon Macs on macOS 14
+  or later, including all six plate formats from v1.0.1. Keep starter templates
+  and instructions for adapting the CSV template to each plate type in the
+  README. Updates preserve saved Google sign-in and preferences.
+
 ## 1.0.1 — October 4, 2026
 
 Source update. No v1.0.1 installer has been built or published; the available

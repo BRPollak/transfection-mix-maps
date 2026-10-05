@@ -62,7 +62,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
         window.delegate = self
         window.center()
 
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.1"
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.3"
         let versionLabel = NSTextField(labelWithString: "TRANSFECTION MIX MAPS · VERSION \(version)")
         versionLabel.font = .systemFont(ofSize: 11, weight: .semibold)
         versionLabel.textColor = .secondaryLabelColor
