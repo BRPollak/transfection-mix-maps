@@ -3,6 +3,10 @@
 The installed Mac app includes Python and its dependencies. These instructions
 are for working on the source or building an installer.
 
+The source is **v1.0.1**. This update has no built or published installer; the
+available GitHub installer remains **v1.0.0**. The build commands below describe
+how to create a future v1.0.1 package.
+
 ## Run from source
 
 Use Python 3.12 and [uv](https://docs.astral.sh/uv/). From the repository folder:
@@ -43,8 +47,8 @@ production dependencies:
 ```sh
 UV_PROJECT_ENVIRONMENT=build/package-env uv sync --locked --no-dev --python 3.12
 build/package-env/bin/python packaging/build_macos.py \
-  --staging build/v1.0.0/staging \
-  --pkg dist/v1.0.0/Transfection-Mix-Maps-1.0.0-arm64.pkg
+  --staging build/v1.0.1/staging \
+  --pkg dist/v1.0.1/Transfection-Mix-Maps-1.0.1-arm64.pkg
 ```
 
 Use fresh staging and output paths for each rebuild; existing outputs are not
@@ -65,9 +69,10 @@ unsigned; the app has an ad hoc signature and is not notarized.
 
 Keep `app_version.py`, `pyproject.toml`, the root project entry in `uv.lock`, and
 the launcher fallback in `packaging/Launcher.swift` at the same version.
-Update the README's versioned installer link, run the checks, and build from
-the final source. Verify the bundled runtime and package before uploading the
-installer, checksum, and release metadata to the matching GitHub release.
+Run the checks and build from the final source. Verify the bundled runtime and
+package before uploading the installer, checksum, and release metadata to the
+matching GitHub release. Update the README's versioned installer link only when
+that installer is published; keep source-only updates explicitly identified.
 Keep binary installers in release assets, outside Git history.
 
 ## Source layout
@@ -75,7 +80,8 @@ Keep binary installers in release assets, outside Git history.
 - `app.py`: interface and session state.
 - `core.py`: parsing, calculations, and Excel layout.
 - `workflow.py`: batch validation, in-memory generation, and explicit saves.
-- `plate_preview.py`: the interactive 48-well preview.
+- `plate_formats.py`: shared plate types, geometry, and supported well coordinates.
+- `plate_preview.py`: the interactive preview for the selected plate geometry.
 - `sources.py`: Google Sheets, concentration snapshots, and settings.
 - `native_dialogs.py`: local file and folder selection.
 - `packaging/`: native launcher and macOS installer builder.

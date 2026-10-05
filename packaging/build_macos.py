@@ -24,7 +24,7 @@ sys.path.insert(0, str(PROJECT))
 from app_version import VERSION
 
 APP_FILES = ["app.py", "app_version.py", "core.py", "sources.py", "native_dialogs.py",
-             "workflow.py", "plate_preview.py", "launch.py", ".streamlit/config.toml",
+             "workflow.py", "plate_preview.py", "plate_formats.py", "launch.py", ".streamlit/config.toml",
              "assets/mix-maps-icon.png"]
 DEV_FILES = {"_virtualenv.pth", "_virtualenv.py", "_pytest", "pytest", "pluggy", "iniconfig", "py.py"}
 DEV_PREFIXES = ("pytest-", "pluggy-", "iniconfig-")

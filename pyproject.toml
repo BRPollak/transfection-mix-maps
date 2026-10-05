@@ -1,6 +1,6 @@
 [project]
 name = "transfection-mix-map"
-version = "1.0.0"
+version = "1.0.1"
 description = "Local plate mix maps adapted from Optimized Transfection Mix Maps.ipynb"
 requires-python = ">=3.11,<3.14"
 license = "MIT"

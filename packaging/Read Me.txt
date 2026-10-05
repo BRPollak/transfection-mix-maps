@@ -1,12 +1,18 @@
-TRANSFECTION MIX MAPS 1.0.0
+TRANSFECTION MIX MAPS 1.0.1
 Apple Silicon · macOS 14 or later
 
 Create LT1 or L2000 Excel mix maps from plate CSVs and DNA concentrations
 in Google Sheets. Python and all dependencies are included.
 
+RELEASE STATUS
+Version 1.0.1 is currently a source update. No v1.0.1 installer has been built
+or published. The available published installer remains v1.0.0; see README.md
+for its download link and BUILDING.md to run v1.0.1 from source. The installation
+steps below apply when a v1.0.1 installer is built.
+
 INSTALL OR UPDATE
 1. Quit Transfection Mix Maps if it is running.
-2. Open Transfection-Mix-Maps-1.0.0-arm64.pkg and follow the Installer prompts.
+2. Open Transfection-Mix-Maps-1.0.1-arm64.pkg and follow the Installer prompts.
 3. Open Transfection Mix Maps from Applications.
 
 The installer replaces the app in /Applications and preserves your Google
@@ -19,7 +25,8 @@ USE THE APP
    Save the client JSON file, sign in, and enter your Google Sheet URL or ID.
 2. Press Confirm Sheet & refresh concentrations. The Sheet needs Plasmid and
    Concentration (ng/uL) columns. Refresh it after changing stock values.
-3. Choose up to five plate CSVs, select LT1 or L2000, and review the settings.
+3. Select Plate type, then choose up to five plate CSVs. The plate type applies
+   to the whole batch. Select LT1 or L2000 and review the settings.
 4. Choose a save folder. One plate uses its CSV's folder automatically;
    multiple plates require a folder selection with Save Excel files to….
 5. Press Generate to prepare and review the maps. This does not save files.
@@ -30,6 +37,25 @@ L2000 supports up to five positive total DNA masses per plate. Prepare each
 bulk recipe separately and follow its assigned wells and aliquot volume.
 Symbols ▲ ● ■ ◆ ★ identify multiple mixes in the preview and workbook.
 Preparation includes overage; deliver only the configured final volume.
+
+PLATE TYPES
+96-well: A1-H12 (8 rows x 12 columns)
+48-well: A1-F8 (6 rows x 8 columns)
+24-well: A1-D6 (4 rows x 6 columns)
+12-well: A1-C4 (3 rows x 4 columns)
+6-well: A1-B3 (2 rows x 3 columns)
+Single well (dish): A1
+
+Plate type starts at 48-well each new session and is not saved in preferences.
+Changing it retains CSVs, rechecks them, and requires generating again. Wide
+and long CSV formats remain supported. Unused unsupported wells with blank or
+valid-zero DNA are ignored. Positive DNA outside the selected layout blocks
+the batch; the error identifies its filename, CSV row, well, and allowed range.
+
+The preview shows the complete plate. For printing, 96-well workbooks have
+Mix Map (A-D) and Mix Map (E-H) tabs, each on one landscape Letter page.
+Both repeat the whole-plate recipes: prepare each bulk recipe once, then use
+its aliquots across both halves. Other plate types have one Mix Map tab.
 
 The app remembers your Google connection and preferences on this Mac.
 Select your plate CSVs again when you return. Private settings are stored at:

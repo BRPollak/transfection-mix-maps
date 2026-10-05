@@ -16,6 +16,7 @@ from app_version import VERSION
 from core import MixMapError, standardize_plate_csv
 from native_dialogs import FolderPickerError, PlatePickerError, choose_output_folder, choose_plate_files
 from plate_preview import plate_preview_html
+from plate_formats import PLATE_FORMATS, get_plate_format
 from sources import (APP_DIR, LOCAL_ZONE, STATE_DIR, authenticate_google, auth_status,
                      load_settings, load_snapshot, private_json, refresh_google,
                      read_plate, save_settings, sheet_id)
@@ -29,7 +30,7 @@ st.set_page_config(page_title=f"Generate transfection mix maps · v{VERSION}", p
 UI_VERSION = 3
 # Increment when parsing, calculations, or workbook output semantics change so
 # a live session must regenerate results without migrating saved preferences.
-CALCULATION_REVISION = 3
+CALCULATION_REVISION = 4
 FIELDS = {
     "final_volume_ul": ("Final volume to be delivered to each well (µL)", "Before the well overage factor is applied."),
     "dna_to_reagent_ratio_ul_per_ug": ("Transfectant ratio (µL / µg DNA)", "Transfectant volume per microgram of DNA."),
@@ -81,6 +82,9 @@ def initialize():
             st.session_state.pop(key, None)
         st.session_state.ui_version = UI_VERSION
     saved = st.session_state.preferences
+    # Plate type belongs to this session, never the saved preferences.
+    if st.session_state.get("plate_type") not in PLATE_FORMATS:
+        st.session_state.plate_type = 48
     defaults = {"reagent_choice": "LT1", "output_folder": "", "sheet_url": "",
                 "credentials_path": str(STATE_DIR / "auth" / "client_credentials.json")}
     choices = {"reagent_choice": ["LT1", "L2000"]}
@@ -272,6 +276,7 @@ def show_result(result, config, destination):
             for warning in result["warnings"]:
                 st.warning(warning)
     for index, artifact in enumerate(artifacts, 1):
+        plate_format = get_plate_format(artifact["plate_type"])
         title = (f"{index} · {artifact['plate_name']}" if count > 1 else
                  "Preview volumes and plate map")
         with st.expander(title, expanded=count == 1):
@@ -313,7 +318,8 @@ def show_result(result, config, destination):
                 "Reagent_uL": "LT1 to prepare (µL)",
             }),
                          hide_index=True, width="stretch")
-            st.dataframe(summary.pivot(index="Row", columns="Col", values="Mix").fillna(""), width="stretch")
+            st.dataframe(summary.pivot(index="Row", columns="Col", values="Mix").reindex(
+                index=plate_format.rows, columns=plate_format.columns).fillna(""), width="stretch")
             if artifact["bulk"]:
                 mixes = artifact["bulk"]["mixes"]
                 st.markdown("**Bulk transfectant mixes**")
@@ -332,12 +338,18 @@ def show_result(result, config, destination):
                 } for mix in mixes])
                 st.dataframe(recipes, hide_index=True, width="stretch")
                 st.markdown("**Bulk mix assignments by well**")
-                st.dataframe(summary.pivot(index="Row", columns="Col", values="Bulk transfectant mix").fillna(""),
+                st.dataframe(summary.pivot(index="Row", columns="Col", values="Bulk transfectant mix").reindex(
+                    index=plate_format.rows, columns=plate_format.columns).fillna(""),
                              width="stretch")
 
 
 def plate_section():
     st.subheader("2 · Plate layout")
+    plate_type = st.selectbox("Plate type", list(PLATE_FORMATS), key="plate_type",
+                             format_func=lambda value: get_plate_format(value).label,
+                             help="Applies to every selected CSV. Each new app session starts at 48-well.")
+    plate_format = get_plate_format(plate_type)
+    st.caption(f"Allowed wells: {plate_format.well_range}. Empty template wells outside this range are ignored.")
     if st.button("Choose plate CSVs…", icon="📄"):
         try:
             initial_folder = st.session_state.output_folder or str(Path.home())
@@ -382,19 +394,21 @@ def plate_section():
     previews, errors = {}, []
     for plate in plates:
         try:
-            wells, entries, _ = standardize_plate_csv(read_plate(plate["bytes"]))
+            wells, entries, _ = standardize_plate_csv(read_plate(plate["bytes"]), plate_type=plate_type)
             previews[plate["path"]] = (wells, entries)
         except (MixMapError, ValueError) as exc:
             details = " ".join(exc.details) if isinstance(exc, MixMapError) else ""
             errors.append(f"{plate['name']}: {exc}. {details}".strip())
     if errors:
         show_error(MixMapError("Correct the selected plate layouts", details=errors,
-                               fixes=["Choose the corrected CSVs again before generating."]), no_output=True)
+                               fixes=["Check the plate type, or correct the CSVs and choose them again before generating."]), no_output=True)
 
     with st.container(border=True, width=660, key="plate_preview_card"):
         heading, selector = st.columns([1, 1], vertical_alignment="center")
         with heading:
-            st.markdown("**48-well plate preview**")
+            heading_text = ("Single well (dish) preview" if plate_type == 1 else
+                            f"{plate_format.label} plate preview")
+            st.markdown(f"**{heading_text}**")
         with selector:
             if len(plates) > 1:
                 options = {plate["path"]: plate["name"] for plate in plates}
@@ -410,7 +424,7 @@ def plate_section():
                 preview_path = plates[0]["path"] if plates else None
         wells, entries = previews.get(preview_path, (None, None))
         st.html(plate_preview_html(entries, wells, embedded=True,
-                                   reagent=st.session_state.reagent_choice))
+                                   reagent=st.session_state.reagent_choice, plate_type=plate_type))
     return plates, bool(plates) and not errors
 
 
@@ -490,6 +504,7 @@ def main():
     ready = bool(plate_ready and sheet_ready)
     fingerprint = hashlib.sha256(json.dumps({
         "calculation_revision": CALCULATION_REVISION,
+        "plate_type": st.session_state.plate_type,
         "plates": [{"path": p["path"], "name": p["name"], "hash": hashlib.sha256(p["bytes"]).hexdigest()} for p in plates],
         "snapshot": snapshot, "reagent": reagent,
         "config": configs[reagent],
@@ -506,7 +521,7 @@ def main():
             with st.spinner("Checking all plate inputs and building your workbooks…"):
                 result = generate_batch(plates, snapshot["tables"],
                                         f"Google Sheet: {snapshot['sheet_id']}", snapshot["fetched_at"],
-                                        [reagent], configs)
+                                        [reagent], configs, plate_type=st.session_state.plate_type)
             st.session_state.result = result
             st.session_state.result_fingerprint = fingerprint
             persist()

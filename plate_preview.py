@@ -1,4 +1,4 @@
-"""A safe, self-contained 48-well plate view for Streamlit's ``st.html``."""
+"""A safe, self-contained plate view for Streamlit's ``st.html``."""
 from __future__ import annotations
 
 from html import escape
@@ -6,7 +6,8 @@ import math
 
 import pandas as pd
 
-from core import group_dna_masses, parse_well, row_sort_key
+from core import group_dna_masses, parse_well
+from plate_formats import get_plate_format
 
 
 _STYLE = """<style>
@@ -25,16 +26,18 @@ _STYLE = """<style>
   border-radius:8px; background:#fff2d6; color:#694a12; overflow-wrap:anywhere;
 }
 .tmm-plate-grid {
-  display:grid; grid-template-columns:20px repeat(8,minmax(0,1fr));
+  display:grid; grid-template-columns:20px repeat(var(--tmm-columns),minmax(0,1fr));
+  max-width:var(--tmm-grid-width); margin-inline:auto;
   gap:12px 10px; align-items:center; justify-items:center;
 }
 .tmm-plate-axis {font-size:.78rem; font-weight:600; color:#746f7b;}
 .tmm-well {
-  position:relative; width:100%; max-width:46px; aspect-ratio:1;
+  position:relative; width:100%; max-width:var(--tmm-well-size); aspect-ratio:1;
   border-radius:50%; border:1px solid #dfe0e6;
   background:#ececf0;
 }
 .tmm-well-empty {pointer-events:none;}
+.tmm-dish-label {position:absolute; inset:0; display:grid; place-items:center; font-weight:600;}
 .tmm-well-filled {background:#dfd2f0; border-color:#cabbdf; outline:none;}
 .tmm-well-filled:hover, .tmm-well-filled:focus {
   border-color:#9271b7; box-shadow:0 0 0 3px #eee6f6; z-index:2;
@@ -80,9 +83,9 @@ _STYLE = """<style>
 @media (max-width:480px) {
   .tmm-plate-preview {padding:16px 12px;}
   .tmm-plate-embedded {padding:0;}
-  .tmm-plate-grid {grid-template-columns:15px repeat(8,minmax(0,1fr)); gap:10px 6px;}
+  .tmm-plate-grid {grid-template-columns:15px repeat(var(--tmm-columns),minmax(0,1fr)); gap:10px 6px;}
   .tmm-well-tooltip {max-width:210px;}
-  .tmm-well-marker {font-size:1.15rem;}
+  .tmm-well-marker {font-size:var(--tmm-mobile-marker,1.15rem);}
   .tmm-well-marker .tmm-number-badge {font-size:.6rem;}
 }
 </style>"""
@@ -102,29 +105,28 @@ def _marker_html(symbol: str, numbered: bool) -> str:
 def plate_preview_html(
     long_df: pd.DataFrame | None = None,
     wells_df: pd.DataFrame | None = None,
-    *, embedded: bool = False, reagent: str = "L2000",
+    *, embedded: bool = False, reagent: str = "L2000", plate_type: int = 48,
 ) -> str:
-    """Return an A1–F8 grid, using the frames from ``standardize_plate_csv``.
+    """Return the selected full grid using ``standardize_plate_csv`` frames.
 
     Call without data for the initial empty preview. Positive masses populate
-    wells; repeated plasmid entries at the same physical well are summed. Pass
-    ``wells_df`` too so any empty wells outside A1–F8 appear in the notice.
-    This fixed view does not change which wells may be used for calculations.
+    wells; repeated plasmid entries at the same physical well are summed.
+    Empty template wells outside the selected geometry are ignored.
     Use ``embedded=True`` inside the app's card with its preview selector.
     Multiple DNA totals get the same group markers as the L2000 workbook;
     ``reagent`` selects the explanation, since LT1 exports do not use them.
     """
+    plate_format = get_plate_format(plate_type)
     components: dict[tuple[str, int], dict[str, float]] = {}
-    observed: set[tuple[str, int]] = set()
-    if wells_df is not None:
-        observed.update(parse_well(well) for well in wells_df["Well"])
     if long_df is not None:
         for record in long_df.to_dict("records"):
             position = parse_well(record["Well"])
-            observed.add(position)
             mass = float(record["Mass_ng"])
             if not math.isfinite(mass) or mass <= 0:
                 continue
+            if not plate_format.contains(*position):
+                raise ValueError(f"Well {record['Well']} contains DNA outside the selected "
+                                 f"{plate_format.label} layout ({plate_format.well_range}).")
             name = str(record["Plasmid"])
             amounts = components.setdefault(position, {})
             amounts[name] = amounts.get(name, 0) + mass
@@ -138,34 +140,33 @@ def plate_preview_html(
         for group in groups for well in group["Wells"]
     } if show_markers else {}
 
-    outside = sorted(
-        (position for position in observed if position[0] not in tuple("ABCDEF") or not 1 <= position[1] <= 8),
-        key=lambda position: (row_sort_key(position[0]), position[1]),
-    )
     caption = ("Choose a plate CSV to populate this preview." if long_df is None else
                "Hover over or focus a purple well to see its plasmids and DNA masses.")
     classes = "tmm-plate-preview tmm-plate-embedded" if embedded else "tmm-plate-preview"
-    parts = [_STYLE, f'<section class="{classes}" aria-label="48-well plate preview">']
+    heading = ("Single well (dish) preview" if plate_type == 1 else f"{plate_format.label} plate preview")
+    well_size = min(140, max(36, round(368 / len(plate_format.columns))))
+    grid_width = min(616, 24 + len(plate_format.columns) * (well_size + 10))
+    style = (f"--tmm-columns:{len(plate_format.columns)};--tmm-well-size:{well_size}px;"
+             f"--tmm-grid-width:{grid_width}px;--tmm-mobile-marker:{'.85rem' if plate_type == 96 else '1.15rem'}")
+    parts = [_STYLE, f'<section class="{classes}" aria-label="{heading}" style="{style}">']
     if not embedded:
-        parts.append('<p class="tmm-plate-heading">48-well plate preview</p>')
+        parts.append(f'<p class="tmm-plate-heading">{heading}</p>')
     parts.append(f'<p class="tmm-plate-caption">{caption}</p>')
-    if outside:
-        names = ", ".join(f"{row}{col}" for row, col in outside)
-        parts.append('<p class="tmm-plate-notice" role="note">This preview shows A1–F8 only. '
-                     f'Wells outside this view: {escape(names)}. They remain in your plate layout.</p>')
-
     parts.append('<div class="tmm-plate-grid"><span aria-hidden="true"></span>')
-    for col in range(1, 9):
+    for col in plate_format.columns:
         parts.append(f'<span class="tmm-plate-axis" aria-hidden="true">{col}</span>')
-    for row in "ABCDEF":
+    for row in plate_format.rows:
         parts.append(f'<span class="tmm-plate-axis" aria-hidden="true">{row}</span>')
-        for col in range(1, 9):
+        for col in plate_format.columns:
             well = f"{row}{col}"
             amounts = components.get((row, col))
             if not amounts:
-                parts.append(f'<div class="tmm-well tmm-well-empty" data-well="{well}" aria-hidden="true"></div>')
+                dish_label = '<span class="tmm-dish-label">A1</span>' if plate_type == 1 else ""
+                attributes = 'role="img" aria-label="Well A1. No DNA"' if plate_type == 1 else 'aria-hidden="true"'
+                parts.append(f'<div class="tmm-well tmm-well-empty" data-well="{well}" {attributes}>{dish_label}</div>')
                 continue
-            edge = " tmm-well-left" if col <= 3 else " tmm-well-right" if col >= 6 else ""
+            edge = ("" if plate_type == 1 else " tmm-well-left" if col <= len(plate_format.columns) / 3
+                    else " tmm-well-right" if col > len(plate_format.columns) * 2 / 3 else "")
             entries = [f"{name}: {mass:.12g} ng" for name, mass in amounts.items()]
             group = well_groups.get((row, col))
             marker_attributes = ""
@@ -176,6 +177,8 @@ def plate_preview_html(
             accessible_text = escape(f"Well {well}. " + "; ".join(entries), quote=True)
             parts.append(f'<div class="tmm-well tmm-well-filled{edge}" data-well="{well}" '
                          f'tabindex="0" role="img" aria-label="{accessible_text}"{marker_attributes}>')
+            if plate_type == 1:
+                parts.append('<span class="tmm-dish-label" aria-hidden="true">A1</span>')
             if group:
                 parts.append('<span class="tmm-well-marker" aria-hidden="true">'
                              + _marker_html(group["Symbol"], numbered) + '</span>')
