@@ -1,4 +1,47 @@
-# Excel output formatting verification
+# v1.0.3 release verification
+
+Verified October 5, 2026. The release packages the Excel formatting changes,
+all six plate formats, and the current source as a self-contained Apple Silicon
+installer for macOS 14 or later.
+
+## Source and bundled runtime
+
+- Full source suite: **416 tests passed** after the version update.
+- Offline lockfile and `git diff --check`: passed; dependencies are unchanged.
+- App, project, lockfile, and native launcher fallback report **1.0.3**.
+- Isolated Python 3.12.14 build environment: all 49 production dependencies
+  match the lockfile, with no inherited or development packages.
+- Bundled LT1 and L2000 interface checks: passed using temporary synthetic
+  state, including Generate/Download behavior and all six plate formats.
+- Bundled workbook checks confirm grayscale, bold well IDs, pipette rounding,
+  preserved calculation precision, and both 96-well map tabs.
+
+## Installer verification
+
+Package checks passed for the fixed `/Applications/Transfection Mix Maps.app`
+destination, complete bundle upgrades, disabled relocation, the matching-app
+quit requirement, arm64 binaries, portable runtime links, source/documentation/
+icon parity, strict ad hoc signature, checksum, and privacy exclusions. The
+payload contains no user settings, credentials, generated workbooks, or install
+scripts. The final package is checked again after incorporating these notes.
+
+Release assets: [v1.0.3](https://github.com/BRPollak/transfection-mix-maps/releases/tag/v1.0.3).
+The installer, SHA-256 checksum, and release metadata identify the exact source
+commit and verification results. Build reports are retained locally under
+`build/v1.0.3/checks/`; installers are under `dist/v1.0.3/` outside Git history.
+Local upgrade verification is recorded separately from package validation,
+including the installed version, receipt, payload parity, and unchanged
+Application Support metadata before relaunching.
+
+## Visual review and limits
+
+The worksheet renders described below were reviewed, plus a six-well L2000
+example. Native Excel automation stalled, so this release's pagination and
+physical printing were not reverified. Live Google authorization and real
+native file/folder pickers were not retested. The app is ad hoc signed; the
+installer is unsigned and the app is not Developer ID signed or notarized.
+
+# Excel output formatting verification (source-stage history)
 
 Verified October 5, 2026. Source update only; no installer was built, installed,
 or published for these formatting changes.
@@ -23,8 +66,8 @@ numeric tables, source labels, and diagnostic text retain their existing values.
 Generated fresh synthetic workbooks through the application exporter and
 imported them into Artifact Tool for visual inspection. Reviewed dense 96-well
 maps (both halves), dense 48-well maps, and single-well maps for both reagents,
-plus a sparse 48-well L2000 map and a printable bulk recipe. Bold well IDs, regular recipe text, large mix
-symbols, readable rounded amounts, wrapping, and the active/empty/header gray
+plus a sparse 48-well L2000 map and a printable bulk recipe. Bold well IDs,
+regular recipe text, large mix symbols, readable rounded amounts, wrapping, and the active/empty/header gray
 hierarchy rendered correctly without clipping or overlap.
 
 Synthetic workbooks, render scripts, and PNG evidence are retained in the
