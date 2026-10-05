@@ -77,10 +77,8 @@ your filled CSV.
 
 ![Blank 48-well plate layout showing A1–F8 and empty plasmid and mass columns](examples/48-well-plate-layout.svg)
 
-Both templates are intentionally empty: all stock records have been removed
-from the inventory, and all plasmid names and masses have been removed from the
-plate layout. Add at least one plasmid with positive DNA mass and a matching
-positive stock concentration before generating a mix map.
+Both templates are intentionally empty. Add at least one plasmid with positive DNA mass and a matching
+positive stock concentration before generating a mix map. To adapt this template to another plate type, keep the same column headers and adjust the well rows: **A1–H12** for 96-well, **A1–D6** for 24-well, **A1–C4** for 12-well, **A1–B3** for 6-well, or **A1** for a single dish. Add rows for any additional wells needed; for smaller plates, delete unsupported well rows or leave their plasmid and mass cells blank. Save as CSV and select the matching **Plate type** in the app before loading it. All CSVs in a batch must use the same plate type.
 
 ### Input formats
 
