@@ -421,7 +421,7 @@ def main():
     h1 {letter-spacing:-.04em; font-weight:700;}
     .eyebrow {font-size:.75rem; letter-spacing:.16em; color:#237D70; font-weight:700;}
     .app-brand {display:flex; align-items:center; gap:12px; margin-bottom:4px;}
-    .app-brand img {width:48px; height:48px; flex-shrink:0;}
+    .app-brand img {width:96px; height:96px; flex-shrink:0;}
     div[data-testid="stMetric"] {background:#EDF2ED; padding:14px 18px; border-radius:12px;}
     </style>""", unsafe_allow_html=True)
     icon_data = base64.b64encode(APP_ICON.read_bytes()).decode("ascii")
