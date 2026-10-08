@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.5 — October 8, 2026
+
+Source update. No v1.0.5 installer has been built or published; the available
+installer remains v1.0.3.
+
+- Reject DNA mass columns without matching plasmid columns instead of silently
+  omitting their amounts. Identify the source header and missing column.
+- Reject duplicate plasmid slot columns, including aliases such as `Plasmid1`
+  and `Plasmid 1`, instead of choosing one stock silently.
+- Keep complete stock names on printable mix maps so names with shared prefixes
+  remain distinguishable. Wrap long names and size rows for their full text;
+  reject recipes exceeding Excel's row-height limit to prevent clipped names.
+- Require regeneration of cached workbooks from earlier source versions.
+- Set app, project, lockfile, and launcher fallback versions to 1.0.5; retain
+  the existing v1.0.3 installer download.
+
 ## 1.0.4 — October 8, 2026
 
 Source update. No v1.0.4 installer has been built or published; the available

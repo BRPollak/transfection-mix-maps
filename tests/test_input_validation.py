@@ -67,6 +67,97 @@ def test_ambiguous_mass_columns_never_choose_a_value_silently(tmp_path, plasmid_
     assert not list(tmp_path.iterdir())
 
 
+@pytest.mark.parametrize("mass_header", ["Mass2", "Mass 2 (ng)", "Desired ng2", "Mass02 (ng)"])
+@pytest.mark.parametrize("extra_mass", ["25", "0", ""])
+def test_unmatched_mass_header_names_the_missing_plasmid_before_generation(monkeypatch, mass_header, extra_mass):
+    plate = f"Well,Plasmid1,Mass1 (ng),{mass_header}\nA1,Stock,100,{extra_mass}\n".encode()
+    tables = {"Stocks": [["Plasmid", "Concentration"], ["Stock", "100"]]}
+    monkeypatch.setattr(core, "write_mix_map_workbook", lambda *args, **kwargs: pytest.fail("Created a workbook"))
+    with pytest.raises(core.MixMapError, match="mass column without a matching plasmid column") as caught:
+        generate(plate, "plate.csv", tables, "test", "test", ["LT1"], default_configs())
+    assert caught.value.details == [f"Found {mass_header!r} but the Plasmid2 column is missing."]
+    assert "Add a Plasmid2 column" in caught.value.fixes[0]
+
+
+def test_every_unmatched_mass_slot_is_reported():
+    columns = ["Well", "Plasmid1", "Mass1", "Mass3 (ng)", "Mass2 (ng)"]
+    with pytest.raises(core.MixMapError) as caught:
+        core.standardize_plate_csv(pd.DataFrame([["A1", "Stock", "100", "10", "20"]], columns=columns))
+    assert caught.value.details == [
+        "Found 'Mass2 (ng)' but the Plasmid2 column is missing.",
+        "Found 'Mass3 (ng)' but the Plasmid3 column is missing.",
+    ]
+
+
+@pytest.mark.parametrize("second_header", ["Plasmid 1", "PLASMID1", "Plasmid-1", "Plasmid01", "Plasmid1"])
+def test_duplicate_plasmid_slots_report_both_headers_before_generation(monkeypatch, second_header):
+    plate = f"Well,Plasmid1,Mass1 (ng),{second_header}\nA1,Stock,100,Other\n".encode()
+    tables = {"Stocks": [["Plasmid", "Concentration"], ["Stock", "100"], ["Other", "50"]]}
+    monkeypatch.setattr(core, "write_mix_map_workbook", lambda *args, **kwargs: pytest.fail("Created a workbook"))
+    with pytest.raises(core.MixMapError, match="Duplicate plasmid columns") as caught:
+        generate(plate, "plate.csv", tables, "test", "test", ["LT1"], default_configs())
+    assert caught.value.details == [f"Slot 1 has multiple plasmid columns: 'Plasmid1', {second_header!r}."]
+    assert "Keep exactly one Plasmid column" in caught.value.fixes[0]
+
+
+def test_original_csv_header_validation_handles_bom_blank_lines_and_quoted_headers():
+    plate = '\ufeff\n\nWell,"Plasmid, 1",Mass1 (ng),Plasmid1\nA1,Stock,100,Other\n'.encode()
+    with pytest.raises(core.MixMapError, match="Duplicate plasmid columns") as caught:
+        read_plate(plate)
+    assert caught.value.details == ["Slot 1 has multiple plasmid columns: 'Plasmid, 1', 'Plasmid1'."]
+
+
+def test_duplicate_plasmid_slots_in_a_dataframe_also_stop():
+    frame = pd.DataFrame([["A1", "Stock", "100", "Other"]],
+                         columns=["Well", "Plasmid1", "Mass1 (ng)", "Plasmid1"])
+    with pytest.raises(core.MixMapError, match="Duplicate plasmid columns"):
+        core.standardize_plate_csv(frame)
+
+
+def test_exact_duplicate_plasmid_header_cannot_masquerade_as_slot_11():
+    plate = b"Well,Plasmid1,Mass1,Plasmid1,Mass11\nA1,Stock,100,Other,25\n"
+    tables = {"Stocks": [["Plasmid", "Concentration"], ["Stock", "100"], ["Other", "50"]]}
+    with pytest.raises(core.MixMapError, match="Duplicate plasmid columns") as caught:
+        generate(plate, "plate.csv", tables, "test", "test", ["LT1"], default_configs())
+    assert caught.value.details == ["Slot 1 has multiple plasmid columns: 'Plasmid1', 'Plasmid1'."]
+
+
+def test_extra_unnumbered_mass_in_a_multi_slot_plate_is_not_ignored():
+    plate = b"Well,Plasmid1,Mass1,Plasmid2,Mass2,Mass (ng)\nA1,Stock,100,Other,25,50\n"
+    with pytest.raises(core.MixMapError, match="mass columns without slot numbers") as caught:
+        read_plate(plate)
+    assert "'Mass (ng)'" in caught.value.details[0]
+    assert "Mass1 (ng) for Plasmid1" in caught.value.fixes[0]
+
+
+@pytest.mark.parametrize("header", [
+    "Well,Plasmid1,Mass1 (ng)",
+    "Well,Plasmid 1,Mass 1 (ng)",
+    "Well,Plasmid01,Mass1 (ng)",
+    "Well,Plasmid1,Mass (ng)",
+    "Well,Plasmid2,Desired ng",
+    "Well,Plasmid,Mass (ng)",
+    "Well,Plasmid,Mass2 (ng)",
+])
+def test_supported_single_mass_header_aliases_still_generate_the_requested_amount(header):
+    plate = f"{header}\nA1,Stock,100\n".encode()
+    tables = {"Stocks": [["Plasmid", "Concentration"], ["Stock", "100"]]}
+    result = generate(plate, "plate.csv", tables, "test", "test", ["LT1"], default_configs())
+    assert len(result["artifacts"]) == 1
+    assert result["artifacts"][0]["summary"]["Total DNA_ng"].tolist() == [100]
+
+
+@pytest.mark.parametrize("second_slot", [2, 11])
+def test_reordered_wide_pairs_use_every_mass_and_the_corresponding_stock(second_slot):
+    plate = f"Well,Mass{second_slot} (ng),Plasmid1,Plasmid{second_slot},Mass1 (ng)\nA1,25,Stock,Other,100\n".encode()
+    tables = {"Stocks": [["Plasmid", "Concentration"], ["Stock", "100"], ["Other", "50"]]}
+    result = generate(plate, "plate.csv", tables, "test", "test", ["LT1"], default_configs())
+    details = result["artifacts"][0]["details"]
+    assert details["Plasmid"].tolist() == ["Stock", "Other"]
+    assert details["Mass_ng"].tolist() == [100, 25]
+    assert result["artifacts"][0]["summary"]["Total DNA_ng"].tolist() == [125]
+
+
 def test_well_aliases_merge_in_long_format_and_keep_component_slots():
     frame = read_plate(b"Well,Plasmid,Mass (ng)\na01,Stock,100\nA1,Stock,50\n A 001 ,Other,25\n")
     wells, long, _ = core.standardize_plate_csv(frame)

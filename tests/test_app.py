@@ -256,6 +256,28 @@ def test_verified_sheet_generates_only_selected_reagent(monkeypatch, tmp_path):
     assert len(downloads(at)) == 1
 
 
+@pytest.mark.parametrize("csv_text, reported_headers", [
+    ("Well,Plasmid1,Mass1,Mass2\nA1,Example_A,100,50\n", ["Mass2", "Plasmid2"]),
+    ("Well,Plasmid1,Plasmid 1,Mass1\nA1,Example_A,Example_B,100\n", ["Plasmid1", "Plasmid 1"]),
+    ("Well,Plasmid1,Plasmid1,Mass1\nA1,Example_A,Example_B,100\n", ["Plasmid1"]),
+])
+def test_invalid_slot_headers_block_generation_and_clear_old_result(monkeypatch, tmp_path, csv_text, reported_headers):
+    at, _ = connected(monkeypatch, tmp_path)
+    button(at, "Generate LT1 Excel mix map").click().run()
+    assert "result" in at.session_state
+
+    (tmp_path / "plate.csv").write_text(csv_text)
+    button(at, "Choose plate CSVs…").click().run()
+    assert not at.exception
+    assert at.error
+    error_text = " ".join(error.value for error in at.error)
+    assert all(header in error_text for header in reported_headers)
+    assert button(at, "Generate LT1 Excel mix map").disabled
+    assert "result" not in at.session_state
+    assert not downloads(at)
+    assert not list(tmp_path.glob("*.xlsx"))
+
+
 def test_download_saves_to_current_selected_folder_without_regenerating(monkeypatch, tmp_path):
     at, _ = connected(monkeypatch, tmp_path)
     button(at, "Generate LT1 Excel mix map").click().run()
@@ -396,22 +418,27 @@ def test_generation_failure_clears_result(monkeypatch, tmp_path):
     assert "result" not in at.session_state
 
 
-def test_old_calculation_fingerprint_clears_lt1_result_without_removing_workbook(monkeypatch, tmp_path):
+@pytest.mark.parametrize("old_revision", [2, 4])
+def test_old_calculation_fingerprint_clears_lt1_result_without_removing_workbook(monkeypatch, tmp_path, old_revision):
     at, snapshot = connected(monkeypatch, tmp_path)
     button(at, "Generate LT1 Excel mix map").click().run()
     assert not at.exception
     assert "result" in at.session_state
     button(at, "Download LT1 workbook").click().run()
     existing_outputs = {path.name: path.read_bytes() for path in tmp_path.glob("*.xlsx")}
-    # Recreate the pre-revision fingerprint using exactly the same run inputs.
-    old_fingerprint = hashlib.sha256(json.dumps({
+    # Recreate either the older schema or v1.0.4's exact current input schema.
+    fingerprint_inputs = {
         "plates": [{"path": plate["path"], "name": plate["name"],
                     "hash": hashlib.sha256(plate["bytes"]).hexdigest()}
                    for plate in at.session_state.plates],
         "snapshot": snapshot, "reagent": "LT1", "config": default_configs()["LT1"],
-        "output": str(tmp_path), "sheet_ready": True,
-        "calculation_revision": 2,
-    }, sort_keys=True).encode()).hexdigest()
+        "sheet_ready": True, "calculation_revision": old_revision,
+    }
+    if old_revision == 2:
+        fingerprint_inputs["output"] = str(tmp_path)
+    else:
+        fingerprint_inputs["plate_type"] = at.session_state.plate_type
+    old_fingerprint = hashlib.sha256(json.dumps(fingerprint_inputs, sort_keys=True).encode()).hexdigest()
     assert at.session_state.result_fingerprint != old_fingerprint
     at.session_state.result_fingerprint = old_fingerprint
     at.run()

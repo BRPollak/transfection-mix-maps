@@ -3,7 +3,7 @@
 The installed Mac app includes Python and its dependencies. These instructions
 are for working on the source or building an installer.
 
-The current source is **v1.0.4**, a source-only update. No v1.0.4 installer has
+The current source is **v1.0.5**, a source-only update. No v1.0.5 installer has
 been built or published. The available **v1.0.3** installer is self-contained
 and supports Apple Silicon Macs running macOS 14 or later. The optional build
 commands below show how to package the current source for a future release.
@@ -39,6 +39,12 @@ wrappers, version consistency, and installer policy. macOS package tests require
 Apple's packaging tools. See [VALIDATION.md](VALIDATION.md) for verification
 scope and manual checks.
 
+For source-only updates without creating even a synthetic test installer, run:
+
+```sh
+uv run pytest -q -k 'not test_real_installer_replaces_only_app_and_requires_quit'
+```
+
 ## Build the Mac installer
 
 Use an Apple Silicon Mac with macOS 14 or later and Apple's command-line
@@ -48,8 +54,8 @@ production dependencies:
 ```sh
 UV_PROJECT_ENVIRONMENT=build/package-env uv sync --locked --no-dev --python 3.12
 build/package-env/bin/python packaging/build_macos.py \
-  --staging build/v1.0.4/staging \
-  --pkg dist/v1.0.4/Transfection-Mix-Maps-1.0.4-arm64.pkg
+  --staging build/v1.0.5/staging \
+  --pkg dist/v1.0.5/Transfection-Mix-Maps-1.0.5-arm64.pkg
 ```
 
 Use fresh staging and output paths for each rebuild; existing outputs are not

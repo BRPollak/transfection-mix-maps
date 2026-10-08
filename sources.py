@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from core import MixMapError, extract_spreadsheet_id, scan_concentration_tables
+from core import MixMapError, detect_wide_pairs, extract_spreadsheet_id, scan_concentration_tables
 
 APP_DIR = Path(__file__).resolve().parent
 # Packaged launchers point this at writable Application Support storage; source runs
@@ -65,7 +65,12 @@ def save_settings(settings):
 
 def read_plate(data: bytes):
     try:
-        return pd.read_csv(io.BytesIO(data), encoding="utf-8-sig", dtype=str, keep_default_na=False)
+        options = {"encoding": "utf-8-sig", "dtype": str, "keep_default_na": False}
+        # Read the original header as data before pandas renames duplicate
+        # columns (for example, Plasmid1 to Plasmid1.1, which resembles slot 11).
+        headers = pd.read_csv(io.BytesIO(data), header=None, nrows=1, **options).iloc[0].tolist()
+        detect_wide_pairs(headers)
+        return pd.read_csv(io.BytesIO(data), **options)
     except (ValueError, UnicodeError, pd.errors.ParserError) as exc:
         raise MixMapError("Could not read the plate CSV", [str(exc)],
                           ["Choose a CSV with Well, Plasmid, and Mass (ng) columns, or the wide format."]) from exc

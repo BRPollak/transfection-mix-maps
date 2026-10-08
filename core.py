@@ -520,25 +520,52 @@ def contiguous_rows(observed_rows):
 def detect_wide_pairs(columns):
     plasmid_cols = {}
     mass_cols = {}
+    unnumbered_mass_cols = []
 
     for col in columns:
         norm = normalize_header(col)
         match = re.fullmatch(r"plasmid(\d+)", norm)
         if match:
-            plasmid_cols[match.group(1)] = col
-
-    for col in columns:
+            slot = str(int(match.group(1)))
+            plasmid_cols.setdefault(slot, []).append(col)
         if is_mass_column(col):
             slot = slot_number(col)
-            if slot:
-                mass_cols.setdefault(slot, []).append(col)
+            if slot is None:
+                unnumbered_mass_cols.append(col)
+            else:
+                mass_cols.setdefault(str(int(slot)), []).append(col)
 
     if not plasmid_cols:
         return []
 
+    duplicates = {slot: cols for slot, cols in plasmid_cols.items() if len(cols) > 1}
+    if duplicates:
+        raise MixMapError(
+            "Duplicate plasmid columns in wide-format CSV",
+            details=[f"Slot {slot} has multiple plasmid columns: {', '.join(repr(col) for col in cols)}."
+                     for slot, cols in sorted(duplicates.items(), key=lambda item: int(item[0]))],
+            fixes=["Keep exactly one Plasmid column for each slot number; give different stocks distinct numbered plasmid/mass pairs."],
+        )
+
+    unmatched_slots = sorted(set(mass_cols) - set(plasmid_cols), key=int)
+    if unmatched_slots:
+        raise MixMapError(
+            "Wide-format CSV has a mass column without a matching plasmid column",
+            details=[f"Found {', '.join(repr(col) for col in mass_cols[slot])} but the Plasmid{slot} column is missing."
+                     for slot in unmatched_slots],
+            fixes=[f"Add a Plasmid{slot} column, or remove the unmatched mass column if it is not used."
+                   for slot in unmatched_slots],
+        )
+    if len(plasmid_cols) > 1 and unnumbered_mass_cols:
+        raise MixMapError(
+            "Wide-format CSV has mass columns without slot numbers",
+            details=[f"Cannot pair {', '.join(repr(col) for col in unnumbered_mass_cols)} with a numbered plasmid column."],
+            fixes=["Give every mass column its matching plasmid slot number, such as Mass1 (ng) for Plasmid1."],
+        )
+
     pairs = []
-    unnumbered_mass_cols = [col for col in columns if is_mass_column(col) and slot_number(col) is None]
-    for slot, plasmid_col in sorted(plasmid_cols.items(), key=lambda item: int(item[0])):
+    for slot, plasmid_columns in sorted(plasmid_cols.items(), key=lambda item: int(item[0])):
+        plasmid_col = plasmid_columns[0]
         candidates = list(mass_cols.get(slot, []))
         if len(plasmid_cols) == 1:
             candidates.extend(unnumbered_mass_cols)
@@ -1242,9 +1269,12 @@ def format_well_mix_lines(row, details, config):
     mode_label = "DNA mix" if config.get("mode") == "two_tube" else "complete mix"
     lines = [f"{row['Well']}  {mode_label}"]
     for _, plasmid_row in subset.iterrows():
+        # The entire stock identifier is needed at the bench: even different
+        # stocks in separate wells can share a prefix. Wrapping and row sizing
+        # in write_mix_map_sheet make room without inventing shortened aliases.
         lines.append(
             f"{format_volume_ul(plasmid_row['Working DNA volume_uL'])}  "
-            f"{shorten_label(plasmid_row['Matched plasmid'])}"
+            f"{clean_cell(plasmid_row['Matched plasmid'])}"
         )
     lines.append(f"{format_volume_ul(row['DNA diluent_uL'])}  {shorten_label(config['diluent_label'])}")
     if config.get("mode") == "single_tube":
@@ -1473,7 +1503,8 @@ def write_mix_map_sheet(
             # Account for automatic wrapping, especially the narrower 96-well
             # columns. The estimate includes space for the cell's padding.
             chars_per_line = max(1, int((well_col_width * 7 - 8) / (well_font_size * 0.7)))
-            wrapped_lines = sum(max(1, math.ceil(len(line) / chars_per_line)) for line in lines)
+            wrapped_lines = sum(max(1, math.ceil(len(part) / chars_per_line))
+                                for line in lines for part in line.split("\n"))
             max_lines = max(max_lines, wrapped_lines or 1)
             value = "\n".join(lines) if lines else ("A1" if plate_format.well_count == 1 else "")
             if lines:
@@ -1509,7 +1540,22 @@ def write_mix_map_sheet(
         line_count = max_lines_by_row.get(row_label, 1)
         # Reserve a taller final line for the print-friendly mix symbol.
         symbol_extra_height = 10 if row_label in symbol_rows else 0
-        ws.row_dimensions[sheet_row].height = max(48, 14 + 12 * line_count + symbol_extra_height)
+        row_height = max(48, 14 + 12 * line_count + symbol_extra_height)
+        # Excel cannot display rows taller than 409 points. Fail rather than
+        # generate a printable recipe with a clipped stock identifier.
+        if row_height > 409:
+            wells = [str(summary_lookup[(row_label, col)]["Well"]) for col in cols
+                     if (row_label, col) in summary_lookup
+                     and float(summary_lookup[(row_label, col)]["Total DNA_ng"]) > 0]
+            raise MixMapError(
+                "Recipe is too tall for the printed mix map",
+                details=[f"{Path(csv_name).name}: {ws.title}, plate row {row_label} "
+                         f"(wells {', '.join(wells)}) "
+                         f"requires {row_height:g} points of height; Excel supports at most 409."],
+                fixes=["Use shorter, unique plasmid stock names in both the plate CSV and "
+                       "the concentration table, then regenerate."],
+            )
+        ws.row_dimensions[sheet_row].height = row_height
 
     last_grid_row = start_row + len(rows)
     ws.freeze_panes = ws.cell(start_row + 1, start_col).coordinate
