@@ -1,3 +1,3 @@
 """Version displayed by the app and its launcher."""
 
-VERSION = "1.0.4"
+VERSION = "1.0.5"

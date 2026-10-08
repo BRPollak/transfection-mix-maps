@@ -1,3 +1,48 @@
+# v1.0.5 source verification
+
+Verified October 8, 2026. This is a source-only update for CSV column validation
+and distinguishable printed stock names. No installer was built, installed,
+or published.
+
+## Automated checks
+
+- `.venv/bin/python -m pytest -q -k 'not test_real_installer_replaces_only_app_and_requires_quit'`:
+  **500 passed, 1 deselected**. The excluded test builds a synthetic installer
+  and was deliberately omitted for this update.
+- `UV_CACHE_DIR=/private/tmp/mixmap-v105-uv-cache uv lock --check --offline`:
+  passed; dependency versions are unchanged.
+- `git diff --check`: passed.
+- App, project, lockfile project entry, and native launcher fallback report
+  **1.0.5**. The existing v1.0.3 installer link remains available.
+
+CSV regressions exercise orphan mass headers with positive, zero, and blank
+amounts; duplicate exact and normalized plasmid headers before pandas renames
+them; leading-zero slots; and reordered, nonadjacent, and legacy valid pairs.
+Errors identify missing or duplicated headers before workbook creation.
+Interface tests verify that invalid layouts disable generation, show the
+offending headers, and clear old results. Results cached under calculation
+revision 4 also require regeneration without altering saved workbooks.
+
+Workbook regressions cover full names differing at their suffixes or in the
+middle, multiple stocks in one well, names repeated across wells and both
+96-well map halves, literal names matching former shortened labels, and
+formula-like identifiers. Row sizing accounts for wrapped text and embedded
+newlines; recipes exceeding Excel's 409-point row limit fail with the CSV name,
+map section, and affected row/wells instead of clipping identifiers.
+
+## Rendered workbook review and limits
+
+Generated fresh synthetic workbooks through the exporter and reviewed worksheet
+renders for a dense 96-well L2000 plate (both halves), a dense 48-well LT1 plate,
+and a single-well LT1 map. Complete names with shared prefixes and differing
+endings remain visible with wrapping, readable component lines, and retained
+bulk-mix symbols. Fixtures, render scripts, and PNG evidence are retained in
+the ignored `build/v1.0.5/visual-checks/` directory.
+
+These are worksheet renders, not native Excel print/PDF checks. Native
+pagination and physical printing were not exercised. No native launcher or
+installer was built.
+
 # v1.0.4 source verification
 
 Verified October 8, 2026. This is a source-only update for Google sign-in retry

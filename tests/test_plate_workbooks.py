@@ -201,15 +201,81 @@ def test_96_well_empty_bottom_half_still_has_the_same_recipes_and_notes():
 
 
 def test_dense_96_well_long_labels_reserve_height_for_wrapping_and_symbols():
-    name = "A very long plasmid stock identifier"
+    name = "A very long plasmid stock identifier with a distinguishing suffix - stock 001"
     rows = [(f"{row}{column}", name, (1 + (column - 1) % 5) * 100)
             for row in "ABCDEFGH" for column in range(1, 13)]
     workbook, _ = workbook_for(rows, 96, stocks={"Stocks": [["Plasmid", "Concentration"], [name, 100]]})
     try:
         for sheet in (workbook["Mix Map (A-D)"], workbook["Mix Map (E-H)"]):
             for cell in grid_positions(sheet).values():
+                assert name in cell.value
                 explicit_lines = len(cell.value.splitlines())
                 assert sheet.row_dimensions[cell.row].height > 14 + 12 * explicit_lines + 10
                 assert cell.font.sz == 8
+    finally:
+        workbook.close()
+
+
+@pytest.mark.parametrize("plate_type", [48, 96])
+@pytest.mark.parametrize("reagent", ["LT1", "L2000"])
+def test_printed_maps_preserve_complete_distinct_stock_names(plate_type, reagent):
+    names = [
+        "Shared backbone construct variant alpha - stock 001",
+        "Shared backbone construct variant alpha - stock 002",
+        "Shared backbone construct variant beta - stock 001",
+        # A real stock may already use the old shortened label as its name.
+        "Shared backbone const...",
+        "=Shared backbone construct variant alpha - stock 003",
+    ]
+    last_row = PLATE_FORMATS[plate_type].rows[-1]
+    rows = [("A1", names[0], 100), ("A1", names[1], 100),
+            ("A2", names[3], 100), (f"{last_row}1", names[2], 100),
+            (f"{last_row}2", names[0], 100), (f"{last_row}3", names[4], 100)]
+    stocks = {"Stocks": [["Plasmid", "Concentration"]] + [[name, 100] for name in names]}
+    workbook, artifact = workbook_for(rows, plate_type, reagent, stocks)
+    rich = load_workbook(BytesIO(artifact["bytes"]), rich_text=True)
+    try:
+        positions = {well: (sheet, cell) for sheet in workbook if sheet.title.startswith("Mix Map")
+                     for well, cell in grid_positions(sheet).items()}
+        expected = {}
+        for well, name, _ in rows:
+            expected.setdefault(well, []).append(name)
+        for well, stock_names in expected.items():
+            sheet, cell = positions[well]
+            component_lines = cell.value.splitlines()[1:1 + len(stock_names)]
+            assert [line.partition("  ")[2] for line in component_lines] == stock_names
+            assert cell.alignment.wrap_text
+            assert str(rich[sheet.title][cell.coordinate].value) == cell.value
+        assert not any(cell.data_type == "f" for sheet in workbook for row in sheet for cell in row)
+        assert set(artifact["details"]["Matched plasmid"]) == set(names)
+    finally:
+        workbook.close()
+        rich.close()
+
+
+@pytest.mark.parametrize("name", [
+    "A long plasmid stock identifier " * 30 + "stock 001",
+    "Stock\n" * 40 + "001",
+])
+def test_maps_reject_stock_names_that_would_exceed_excel_row_height(name):
+    stocks = {"Stocks": [["Plasmid", "Concentration"], [name, 100]]}
+    with pytest.raises(core.MixMapError) as caught:
+        workbook_for([("H12", name, 100)], 96, stocks=stocks)
+    assert "too tall" in str(caught.value)
+    assert any("plate.csv" in detail and "Mix Map (E-H)" in detail
+               and "H12" in detail and "409" in detail
+               for detail in caught.value.details)
+    assert any("shorter, unique" in fix for fix in caught.value.fixes)
+
+
+def test_names_with_line_breaks_reserve_height_for_each_displayed_line():
+    name = "Stock\n" * 12 + "001"
+    stocks = {"Stocks": [["Plasmid", "Concentration"], [name, 100]]}
+    workbook, _ = workbook_for([("A1", name, 100)], 96, stocks=stocks)
+    try:
+        sheet = workbook["Mix Map (A-D)"]
+        cell = grid_positions(sheet)["A1"]
+        assert name in cell.value
+        assert sheet.row_dimensions[cell.row].height >= 12 * len(cell.value.splitlines())
     finally:
         workbook.close()

@@ -1,19 +1,19 @@
-# Transfection Mix Maps · v1.0.4
+# Transfection Mix Maps · v1.0.5
 
 Create Excel transfection mix maps for **LT1** or **L2000** from plate-layout
 CSVs and DNA concentrations in Google Sheets. Preview up to five plates and
 save a separate workbook for each one.
 
-**v1.0.4** lets you retry temporary Google connection problems without losing
-your saved sign-in and adds **Change Google account** so you can choose an
-account with access to your Sheet. This is a source update; no v1.0.4 installer
-has been built or published. See [BUILDING.md](BUILDING.md) to run from source.
+**v1.0.5** rejects unmatched DNA mass columns and duplicate plasmid slot
+columns, and preserves complete stock names on printable mix maps. This is
+a source update; no v1.0.5 installer has been built or published.
+See [BUILDING.md](BUILDING.md) to run from source.
 
 The available **v1.0.3** installer includes all six plate types and printable
 Excel maps with bold well identifiers, grayscale styling, and pipette-aware
 volume rounding. It is self-contained for Apple Silicon Macs running macOS 14
 or later and includes Python and all dependencies. It does not include the
-v1.0.4 Google connection fixes.
+v1.0.4 Google connection fixes or v1.0.5 CSV and printed-name fixes.
 
 ## Install or update v1.0.3
 
@@ -135,6 +135,11 @@ A1,Plasmid A,100,Plasmid B,50
 A2,Plasmid A,150,,
 ```
 
+Each numbered mass column must have its matching plasmid column (for example,
+`Mass2 (ng)` requires `Plasmid2`), even when its cells are blank. Each slot must
+have just one plasmid column; aliases such as `Plasmid1` and `Plasmid 1` count
+as duplicates. Correct the reported columns before generating a recipe.
+
 **Long format:** one row per plasmid; repeat the well for additional plasmids.
 
 ```csv
@@ -210,6 +215,12 @@ independently, so printed components may differ slightly from printed totals
 tables retain their existing precision. All workbook sheets use grayscale;
 DNA wells are the lightest gray, empty wells are darker, and row/column labels
 are slightly darker again. Bold well identifiers help locate each recipe.
+
+Stock names appear in full on the printable map, with wrapping and taller rows
+for long names. Endings and other distinguishing parts of the names are retained
+so you can identify the stock to pipette. If a recipe exceeds Excel's row-height
+limit, generation stops and identifies the affected plate row. Shorten the stock
+names in both inputs while keeping them unique, then regenerate.
 
 Preparation volumes include overage for pipetting loss. Deliver only the
 configured **Final volume to be delivered to each well**. The well overage factor

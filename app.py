@@ -30,7 +30,7 @@ st.set_page_config(page_title=f"Generate transfection mix maps · v{VERSION}", p
 UI_VERSION = 3
 # Increment when parsing, calculations, or workbook output semantics change so
 # a live session must regenerate results without migrating saved preferences.
-CALCULATION_REVISION = 4
+CALCULATION_REVISION = 5
 FIELDS = {
     "final_volume_ul": ("Final volume to be delivered to each well (µL)", "Before the well overage factor is applied."),
     "dna_to_reagent_ratio_ul_per_ug": ("Transfectant ratio (µL / µg DNA)", "Transfectant volume per microgram of DNA."),
