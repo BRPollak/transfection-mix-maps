@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from google.auth.exceptions import RefreshError, TransportError
 from google.oauth2.credentials import Credentials
 
 import sources
@@ -107,6 +108,7 @@ def test_authenticate_uses_read_only_scope_and_persists_private_token(client_fil
     assert result["state"] == "saved"
     assert factory.call_args.args[1] == sources.SHEETS_SCOPES
     assert flow.run_local_server.call_args.kwargs["host"] == "127.0.0.1"
+    assert flow.run_local_server.call_args.kwargs["prompt"] == "consent"
     assert "test-access-token" not in json.dumps(result)
     assert sources.auth_status(path)["state"] == "saved"
     # A normal second click checks the saved credentials live without opening a browser.
@@ -120,6 +122,9 @@ def test_authenticate_uses_read_only_scope_and_persists_private_token(client_fil
     reconnected = sources.authenticate_google(path, force=True)
     assert reconnected["auth_session"] != result["auth_session"]
     assert factory.call_count == 2
+    assert flow.run_local_server.call_args.kwargs["prompt"] == "select_account consent"
+    assert flow.run_local_server.call_args.kwargs["access_type"] == "offline"
+    refresh.assert_called_once()  # Changing accounts bypasses the old token.
 
 
 def test_refresh_does_not_open_sign_in_implicitly(client_file, monkeypatch):
@@ -189,10 +194,157 @@ def test_revoked_refresh_requires_sign_in(client_file, monkeypatch):
     metadata = save_auth(path)
     token_path, _ = sources._auth_paths(metadata["client_key"])
     sources.private_json(token_path, json.loads(credentials(expired=True).to_json()))
-    monkeypatch.setattr(Credentials, "refresh", Mock(side_effect=RefreshError("revoked")))
+    monkeypatch.setattr(Credentials, "refresh", Mock(side_effect=RefreshError(
+        "invalid_grant: Token has been revoked.", {"error": "invalid_grant"}
+    )))
     with pytest.raises(MixMapError, match="expired or was revoked"):
         sources.refresh_google("existing-sheet-id-for-testing", path)
     assert sources.auth_status(path)["state"] == "needs_sign_in"
+
+
+@pytest.mark.parametrize("operation", ["confirm", "expired_token", "sheet_request"])
+@pytest.mark.parametrize("error", [
+    RefreshError("private-provider-detail", retryable=True),
+    RefreshError("private-provider-detail", {"error": "server_error"}, retryable=True),
+    RefreshError("private-provider-detail", {"error": "temporarily_unavailable"}),
+    RefreshError("private-provider-detail", {"error": "internal_failure"}),
+    RefreshError("private-provider-detail"),
+    RefreshError("private-provider-detail", {"error": "invalid_client"}),
+    RefreshError("invalid_grant: private-provider-detail", {"error": "server_error"}),
+    RefreshError("private-provider-detail", {"error": "invalid_grant"}, retryable=True),
+    TransportError("private-provider-detail"),
+], ids=["retryable", "server-error", "unavailable", "internal-failure", "unknown",
+        "client-config", "response-over-message", "retryable-invalid-grant", "transport"])
+def test_temporary_refresh_failure_preserves_sign_in_and_allows_retry(
+        client_file, monkeypatch, state, operation, error):
+    import gspread
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    path = client_file()
+    auth = save_auth(path)
+    token_path, metadata_path = sources._auth_paths(auth["client_key"])
+    if operation == "expired_token":
+        sources.private_json(token_path, json.loads(credentials(expired=True).to_json()))
+    sid = "existing-sheet-id-for-testing"
+    cached = {
+        "sheet_id": sid, "client_key": auth["client_key"],
+        "auth_session": auth["auth_session"], "title": "Saved stocks",
+        "fetched_at": "2026-01-01T12:00:00-08:00", "tables": {
+            "Stocks": [["Plasmid", "Concentration"], ["A", "50"]]
+        },
+    }
+    cache_path = state / "cache" / auth["client_key"] / f"{sid}.json"
+    sources.private_json(cache_path, cached)
+    saved_files = {p: p.read_bytes() for p in (token_path, metadata_path, cache_path)}
+    factory = Mock(side_effect=AssertionError("Unexpected browser sign-in"))
+    monkeypatch.setattr(InstalledAppFlow, "from_client_config", factory)
+    book = SimpleNamespace(title="Current stocks", worksheets=lambda: [])
+    open_book = Mock(return_value=book)
+    client = SimpleNamespace(set_timeout=Mock(), open_by_key=open_book)
+    monkeypatch.setattr(gspread, "authorize", Mock(return_value=client))
+    refresh = Mock()
+    monkeypatch.setattr(Credentials, "refresh", refresh)
+    failing_request = open_book if operation == "sheet_request" else refresh
+    failing_request.side_effect = error
+
+    def attempt():
+        if operation == "confirm":
+            return sources.authenticate_google(path)
+        return sources.refresh_google(sid, path)
+
+    with pytest.raises(MixMapError) as caught:
+        attempt()
+    assert not isinstance(caught.value, sources._SignInRequired)
+    assert "private-provider-detail" not in str(caught.value)
+    assert "private-provider-detail" not in str(caught.value.details + caught.value.fixes)
+    assert sources.auth_status(path)["state"] == "saved"
+    assert {p: p.read_bytes() for p in saved_files} == saved_files
+    assert sources.load_snapshot(sid, path)["auth_session"] == auth["auth_session"]
+    factory.assert_not_called()
+
+    failing_request.side_effect = None
+    result = attempt()
+    assert result["auth_session"] == auth["auth_session"]
+    assert sources.auth_status(path)["state"] == "saved"
+    factory.assert_not_called()
+    assert failing_request.call_count == 2
+    if operation != "confirm":
+        assert sources.load_snapshot(sid, path)["title"] == "Current stocks"
+
+
+@pytest.mark.parametrize("operation", ["confirm", "expired_token", "sheet_request"])
+@pytest.mark.parametrize("error", [
+    RefreshError("invalid_grant: private-provider-detail", {"error": "invalid_grant"}),
+    RefreshError("invalid_grant: private-provider-detail"),
+], ids=["oauth-response", "oauth-error-code"])
+def test_invalid_grant_requires_new_sign_in(client_file, monkeypatch, operation, error):
+    import gspread
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    path = client_file()
+    auth = save_auth(path)
+    token_path, _ = sources._auth_paths(auth["client_key"])
+    if operation == "expired_token":
+        sources.private_json(token_path, json.loads(credentials(expired=True).to_json()))
+    monkeypatch.setattr(Credentials, "refresh", Mock(side_effect=error))
+    client = SimpleNamespace(set_timeout=Mock(), open_by_key=Mock(side_effect=error))
+    monkeypatch.setattr(gspread, "authorize", Mock(return_value=client))
+    flow = SimpleNamespace(run_local_server=Mock(return_value=credentials()))
+    factory = Mock(return_value=flow)
+    monkeypatch.setattr(InstalledAppFlow, "from_client_config", factory)
+
+    if operation == "confirm":
+        result = sources.authenticate_google(path)
+        factory.assert_called_once()
+        assert result["auth_session"] != auth["auth_session"]
+        assert sources.auth_status(path)["state"] == "saved"
+    else:
+        with pytest.raises(sources._SignInRequired, match="expired or was revoked"):
+            sources.refresh_google("existing-sheet-id-for-testing", path)
+        assert sources.auth_status(path)["state"] == "needs_sign_in"
+        factory.assert_not_called()
+
+
+@pytest.mark.parametrize("outcome", ["success", "cancelled", "invalid-token", "wrong-scope"])
+def test_account_change_replaces_session_only_after_success(client_file, monkeypatch, state, outcome):
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    path = client_file()
+    auth = save_auth(path)
+    token_path, metadata_path = sources._auth_paths(auth["client_key"])
+    sid = "existing-sheet-id-for-testing"
+    cache_path = state / "cache" / auth["client_key"] / f"{sid}.json"
+    sources.private_json(cache_path, {
+        "sheet_id": sid, "client_key": auth["client_key"], "auth_session": auth["auth_session"],
+        "tables": {"Stocks": [["Plasmid", "Concentration"], ["A", "50"]]},
+    })
+    saved_files = {p: p.read_bytes() for p in (token_path, metadata_path, cache_path)}
+    replacement = credentials(expired=outcome == "invalid-token")
+    replacement.token = "replacement-access-token"
+    if outcome == "wrong-scope":
+        replacement = Credentials("replacement-access-token", scopes=["unexpected-scope"])
+    flow = SimpleNamespace(run_local_server=Mock(return_value=replacement))
+    if outcome == "cancelled":
+        flow.run_local_server.side_effect = TimeoutError("private-provider-detail")
+    factory = Mock(return_value=flow)
+    monkeypatch.setattr(InstalledAppFlow, "from_client_config", factory)
+    refresh = Mock(side_effect=AssertionError("Old account must not be refreshed"))
+    monkeypatch.setattr(Credentials, "refresh", refresh)
+
+    if outcome == "success":
+        result = sources.authenticate_google(path, force=True)
+        assert result["auth_session"] != auth["auth_session"]
+        assert json.loads(token_path.read_text())["token"] == "replacement-access-token"
+        assert sources.load_snapshot(sid, path) is None
+    else:
+        with pytest.raises(MixMapError):
+            sources.authenticate_google(path, force=True)
+        assert {p: p.read_bytes() for p in saved_files} == saved_files
+        assert sources.load_snapshot(sid, path)["auth_session"] == auth["auth_session"]
+    assert sources.auth_status(path)["state"] == "saved"
+    assert factory.call_args.args[1] == sources.SHEETS_SCOPES
+    assert flow.run_local_server.call_args.kwargs["prompt"] == "select_account consent"
+    refresh.assert_not_called()
 
 
 def test_sheet_scan_reports_columns_rows_preview_and_ignored_tabs():

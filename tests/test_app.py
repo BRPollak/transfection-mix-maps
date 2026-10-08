@@ -86,6 +86,107 @@ def test_invalid_sheet_url_reports_problem(monkeypatch, tmp_path):
     assert button(at, "Confirm Sheet & refresh concentrations").disabled
 
 
+@pytest.mark.parametrize("state", ["saved", "needs_sign_in"])
+def test_change_google_account_forces_account_selection(monkeypatch, tmp_path, state):
+    monkeypatch.setattr(sources, "auth_status", lambda path: {"state": state, "message": "Saved account."})
+    authenticate = Mock()
+    monkeypatch.setattr(sources, "authenticate_google", authenticate)
+    at = start(monkeypatch, tmp_path)
+    button(at, "Change Google account").click().run()
+    assert not at.exception
+    authenticate.assert_called_once_with(at.session_state.credentials_path, force=True)
+
+
+def test_changing_google_account_clears_previous_result_and_requires_sheet_refresh(monkeypatch, tmp_path):
+    at, snapshot = connected(monkeypatch, tmp_path)
+    button(at, "Generate LT1 Excel mix map").click().run()
+    assert "result" in at.session_state
+    current_snapshot = [snapshot]
+    monkeypatch.setattr(sources, "load_snapshot", lambda value, path: current_snapshot[0])
+
+    def switch_account(path, *, force):
+        assert force is True
+        # Successful authentication starts a new auth_session. The source layer
+        # rejects cached concentrations from the previous session.
+        current_snapshot[0] = None
+
+    authenticate = Mock(side_effect=switch_account)
+    monkeypatch.setattr(sources, "authenticate_google", authenticate)
+    at.session_state.sheet_issue = sources.MixMapError("The old account cannot open this Sheet")
+    button(at, "Change Google account").click().run()
+    assert not at.exception
+    authenticate.assert_called_once_with(at.session_state.credentials_path, force=True)
+    assert "sheet_issue" not in at.session_state
+    assert "result" not in at.session_state
+    assert "result_fingerprint" not in at.session_state
+    assert not downloads(at)
+    assert not at.error
+    assert not any("Selected Sheet:" in value.value for value in at.markdown)
+    assert not button(at, "Confirm Sheet & refresh concentrations").disabled
+    assert button(at, "Generate LT1 Excel mix map").disabled
+
+    def refresh_sheet(value, path):
+        current_snapshot[0] = dict(snapshot, fetched_at=sources.now_iso())
+        return current_snapshot[0]
+
+    monkeypatch.setattr(sources, "refresh_google", Mock(side_effect=refresh_sheet))
+    button(at, "Confirm Sheet & refresh concentrations").click().run()
+    assert not at.exception
+    assert not button(at, "Generate LT1 Excel mix map").disabled
+    button(at, "Generate LT1 Excel mix map").click().run()
+    assert not at.exception
+    assert "result" in at.session_state
+
+
+def test_cancelled_account_change_keeps_current_account_and_result(monkeypatch, tmp_path):
+    at, _ = connected(monkeypatch, tmp_path)
+    button(at, "Generate LT1 Excel mix map").click().run()
+    fingerprint = at.session_state.result_fingerprint
+    result = at.session_state.result
+    monkeypatch.setattr(sources, "authenticate_google", Mock(side_effect=sources.MixMapError(
+        "Google sign-in was not completed")))
+    button(at, "Change Google account").click().run()
+    assert not at.exception
+    assert any("was not completed" in error.value for error in at.error)
+    assert at.session_state.result == result
+    assert at.session_state.result_fingerprint == fingerprint
+    assert not button(at, "Generate LT1 Excel mix map").disabled
+    assert any("Google sign-in saved" in message.value for message in at.success)
+
+
+def test_failed_account_change_keeps_sheet_access_error_blocking_generation(monkeypatch, tmp_path):
+    at, _ = connected(monkeypatch, tmp_path)
+    monkeypatch.setattr(sources, "refresh_google", Mock(side_effect=sources.MixMapError("Cannot refresh Sheet")))
+    button(at, "Confirm Sheet & refresh concentrations").click().run()
+    monkeypatch.setattr(sources, "authenticate_google", Mock(side_effect=OSError("Cannot save sign-in")))
+    button(at, "Change Google account").click().run()
+    assert not at.exception
+    assert at.session_state.sheet_issue.title == "Cannot refresh Sheet"
+    assert any("Cannot save sign" in error.value for error in at.error)
+    assert button(at, "Generate LT1 Excel mix map").disabled
+    assert "result" not in at.session_state
+    assert any("Google sign-in saved" in message.value for message in at.success)
+
+
+def test_confirm_google_sign_in_keeps_sheet_error_until_refresh_succeeds(monkeypatch, tmp_path):
+    at, snapshot = connected(monkeypatch, tmp_path)
+    monkeypatch.setattr(sources, "refresh_google", Mock(side_effect=sources.MixMapError("Cannot refresh Sheet")))
+    button(at, "Confirm Sheet & refresh concentrations").click().run()
+    authenticate = Mock()
+    monkeypatch.setattr(sources, "authenticate_google", authenticate)
+    button(at, "Confirm Google sign-in").click().run()
+    assert not at.exception
+    authenticate.assert_called_once_with(at.session_state.credentials_path)
+    assert at.session_state.sheet_issue.title == "Cannot refresh Sheet"
+    assert button(at, "Generate LT1 Excel mix map").disabled
+    monkeypatch.setattr(sources, "refresh_google", Mock(return_value=snapshot))
+    button(at, "Confirm Sheet & refresh concentrations").click().run()
+    assert not at.exception
+    assert not at.error
+    assert "sheet_issue" not in at.session_state
+    assert not button(at, "Generate LT1 Excel mix map").disabled
+
+
 def test_missing_used_concentration_reports_one_error_only_on_generation(monkeypatch, tmp_path):
     at, _ = connected(monkeypatch, tmp_path, valid=False)
     assert not at.exception

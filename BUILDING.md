@@ -3,9 +3,10 @@
 The installed Mac app includes Python and its dependencies. These instructions
 are for working on the source or building an installer.
 
-The current source and installer are **v1.0.3**. The installer is self-contained
-and supports Apple Silicon Macs running macOS 14 or later. The build commands
-below create the matching v1.0.3 package.
+The current source is **v1.0.4**, a source-only update. No v1.0.4 installer has
+been built or published. The available **v1.0.3** installer is self-contained
+and supports Apple Silicon Macs running macOS 14 or later. The optional build
+commands below show how to package the current source for a future release.
 
 ## Run from source
 
@@ -47,8 +48,8 @@ production dependencies:
 ```sh
 UV_PROJECT_ENVIRONMENT=build/package-env uv sync --locked --no-dev --python 3.12
 build/package-env/bin/python packaging/build_macos.py \
-  --staging build/v1.0.3/staging \
-  --pkg dist/v1.0.3/Transfection-Mix-Maps-1.0.3-arm64.pkg
+  --staging build/v1.0.4/staging \
+  --pkg dist/v1.0.4/Transfection-Mix-Maps-1.0.4-arm64.pkg
 ```
 
 Use fresh staging and output paths for each rebuild; existing outputs are not
@@ -69,10 +70,12 @@ unsigned; the app has an ad hoc signature and is not notarized.
 
 Keep `app_version.py`, `pyproject.toml`, the root project entry in `uv.lock`, and
 the launcher fallback in `packaging/Launcher.swift` at the same version.
-Run the checks and build from the final source. Verify the bundled runtime and
-package before uploading the installer, checksum, and release metadata to the
-matching GitHub release. Update the README's versioned installer link only when
-that installer is published; keep source-only updates explicitly identified.
+Run the checks against the final source. For a source-only update, skip the
+installer build and keep the existing installer link. For an installer release,
+build from the final source and verify the bundled runtime and package before
+uploading the installer, checksum, and release metadata to the matching GitHub
+release. Update the README's versioned installer link only when that installer
+is published; keep source-only updates explicitly identified.
 Keep binary installers in release assets, outside Git history.
 
 ## Source layout
