@@ -1,3 +1,39 @@
+# v1.0.4 source verification
+
+Verified October 8, 2026. This is a source-only update for Google sign-in retry
+handling and account switching. No installer was built, installed, or published.
+
+## Automated checks
+
+- `.venv/bin/python -m pytest -q -k 'not test_real_installer_replaces_only_app_and_requires_quit'`:
+  **458 passed, 1 deselected**. The excluded test builds a synthetic installer;
+  it was deliberately omitted to avoid packaging an installer for this update.
+- `UV_CACHE_DIR=/private/tmp/mixmap-v104-uv-cache uv lock --check --offline`:
+  passed; dependency versions are unchanged.
+- `git diff --check`: passed.
+- App, project, lockfile project entry, and native launcher fallback report
+  **1.0.4**. The README retains the available v1.0.3 installer link.
+
+Authentication checks exercise explicit confirmation, expired-token refresh,
+and refresh during a Sheet request. Temporary, unrecognized, transport, and
+retryable errors preserve local tokens, authentication metadata, and cached
+concentrations, and a later retry succeeds without opening OAuth. Confirmed
+nonretryable `invalid_grant` errors still require a new sign-in. Raw provider
+error details are not shown to users.
+
+Account-switch checks cover the account-selection prompt, read-only Sheets
+scope, replacing the authentication session after success, rejecting the old
+session's concentrations, clearing prior workbook results, and enabling
+generation after a fresh Sheet refresh. Cancellation and unusable OAuth
+responses preserve the prior account. Interface checks also confirm that
+checking sign-in alone does not dismiss a failed Sheet-access check.
+
+## Verification limits
+
+Google responses and browser authorization are simulated in automated tests;
+live Google account selection and consent were not exercised. No native
+launcher or installer was built for this source update.
+
 # v1.0.3 release verification
 
 Verified October 5, 2026. The release packages the Excel formatting changes,

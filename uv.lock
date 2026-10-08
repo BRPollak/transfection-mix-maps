@@ -1019,7 +1019,7 @@ wheels = [
 
 [[package]]
 name = "transfection-mix-map"
-version = "1.0.3"
+version = "1.0.4"
 source = { virtual = "." }
 dependencies = [
     { name = "google-auth-oauthlib" },

@@ -176,6 +176,26 @@ def _mark_needs_sign_in(client_key):
     private_json(metadata_path, {**metadata, "state": "needs_sign_in"})
 
 
+def _handle_refresh_error(exc, client_key):
+    # google-auth includes the OAuth response in RefreshError.args. Only an
+    # explicit invalid_grant proves the saved authorization is no longer usable;
+    # server errors and unrecognized responses must leave it available to retry.
+    response = next((arg for arg in exc.args if isinstance(arg, dict)), None)
+    error_code = response.get("error") if response is not None else (
+        exc.args[0].partition(":")[0].strip()
+        if exc.args and isinstance(exc.args[0], str) else None
+    )
+    if not exc.retryable and error_code == "invalid_grant":
+        _mark_needs_sign_in(client_key)
+        raise _SignInRequired("Your Google sign-in has expired or was revoked", fixes=[
+            "Sign in to Google again, then refresh the Sheet."
+        ]) from exc
+    raise MixMapError("Google sign-in could not be checked", fixes=[
+        "Your saved sign-in has been kept. Google may be temporarily unavailable.",
+        "Check your internet connection and try again."
+    ]) from exc
+
+
 def _refresh_token(credentials, client_key):
     from google.auth.exceptions import RefreshError
     from google.auth.transport.requests import Request
@@ -183,10 +203,7 @@ def _refresh_token(credentials, client_key):
     try:
         credentials.refresh(Request())
     except RefreshError as exc:
-        _mark_needs_sign_in(client_key)
-        raise _SignInRequired("Your Google sign-in has expired or was revoked", fixes=[
-            "Sign in to Google again, then refresh the Sheet."
-        ]) from exc
+        _handle_refresh_error(exc, client_key)
     except Exception as exc:
         raise MixMapError("Google sign-in could not be checked", fixes=[
             "Check your internet connection and try again."
@@ -221,7 +238,7 @@ def authenticate_google(credentials_path: str, force=False):
             flow = InstalledAppFlow.from_client_config(config, SHEETS_SCOPES)
             credentials = flow.run_local_server(
                 host="127.0.0.1", port=0, open_browser=True, timeout_seconds=180,
-                prompt="consent", access_type="offline",
+                prompt="select_account consent" if force else "consent", access_type="offline",
                 authorization_prompt_message="Complete Google sign-in in the browser window that opened.",
                 success_message="Google sign-in is complete. Return to Transfection mix maps.",
             )
@@ -277,12 +294,12 @@ def refresh_google(value: str, credentials_path: str):
         tables = {ws.title: ws.get_all_values(value_render_option="UNFORMATTED_VALUE")
                   for ws in book.worksheets()}
     except RefreshError as exc:
-        _mark_needs_sign_in(client_key)
-        raise MixMapError("Your Google sign-in needs to be renewed", fixes=["Sign in to Google again."]) from exc
+        _handle_refresh_error(exc, client_key)
     except Exception as exc:
         raise MixMapError("The Google Sheet could not be refreshed", fixes=[
             "Check the Sheet URL and internet connection.",
-            "Use a Google account with access to the Sheet, and enable the Google Sheets API for your OAuth client."
+            "Use Change Google account to choose an account with access to the Sheet.",
+            "Enable the Google Sheets API for your OAuth client."
         ]) from exc
     _, metadata_path = _auth_paths(client_key)
     metadata = read_json(metadata_path, {})

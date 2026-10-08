@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.4 — October 8, 2026
+
+Source update. No v1.0.4 installer has been built or published; the available
+installer remains v1.0.3.
+
+- Preserve saved Google sign-in when a temporary Google or network problem
+  prevents refreshing credentials, and let users retry instead of requiring
+  another sign-in. Continue requiring sign-in when credentials are no longer
+  usable.
+- Add **Change Google account** to open Google's account chooser, including
+  when the current account cannot access the selected Sheet. After a successful
+  account change, require freshly confirmed Sheet concentrations and regenerate
+  workbooks for the new connection.
+- Set app, project, and launcher fallback versions to 1.0.4. Keep the existing
+  v1.0.3 installer download available without building or publishing an installer.
+
 ## 1.0.3 — October 5, 2026
 
 - Bold the well identifier in each printable recipe and use grayscale throughout

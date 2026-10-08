@@ -191,11 +191,23 @@ def google_section():
                 st.info("Google sign-in needed. Complete One-time Google setup above, then sign in.")
         with auth_right:
             label = "Confirm Google sign-in" if auth_ready else "Sign in to Google"
-            if st.button(label, width="stretch"):
+            sign_in_clicked = st.button(label, width="stretch")
+            change_account_clicked = (status["state"] in ("saved", "needs_sign_in")
+                                      and st.button("Change Google account", width="stretch"))
+            if sign_in_clicked or change_account_clicked:
                 try:
-                    with st.spinner("Checking Google sign-in. Complete sign-in in the window that opens…"):
-                        authenticate_google(st.session_state.credentials_path)
-                    st.session_state.pop("sheet_issue", None)
+                    message = ("Choose a Google account in the window that opens…" if change_account_clicked else
+                               "Checking Google sign-in. Complete sign-in in the window that opens…")
+                    with st.spinner(message):
+                        if change_account_clicked:
+                            authenticate_google(st.session_state.credentials_path, force=True)
+                        else:
+                            authenticate_google(st.session_state.credentials_path)
+                    if change_account_clicked:
+                        # A new auth session invalidates saved Sheet snapshots.
+                        # Discard the old account's error and workbook preview too.
+                        for key in ("sheet_issue", "result", "result_fingerprint"):
+                            st.session_state.pop(key, None)
                     persist()
                     st.rerun()
                 except (MixMapError, OSError) as exc:

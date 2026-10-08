@@ -1,13 +1,19 @@
-# Transfection Mix Maps · v1.0.3
+# Transfection Mix Maps · v1.0.4
 
 Create Excel transfection mix maps for **LT1** or **L2000** from plate-layout
 CSVs and DNA concentrations in Google Sheets. Preview up to five plates and
 save a separate workbook for each one.
 
-**v1.0.3** includes all six plate types and updated printable Excel maps with
-bold well identifiers, grayscale styling, and pipette-aware volume rounding.
-The self-contained installer is for Apple Silicon Macs running macOS 14 or
-later and includes Python and all dependencies.
+**v1.0.4** lets you retry temporary Google connection problems without losing
+your saved sign-in and adds **Change Google account** so you can choose an
+account with access to your Sheet. This is a source update; no v1.0.4 installer
+has been built or published. See [BUILDING.md](BUILDING.md) to run from source.
+
+The available **v1.0.3** installer includes all six plate types and printable
+Excel maps with bold well identifiers, grayscale styling, and pipette-aware
+volume rounding. It is self-contained for Apple Silicon Macs running macOS 14
+or later and includes Python and all dependencies. It does not include the
+v1.0.4 Google connection fixes.
 
 ## Install or update v1.0.3
 
@@ -46,6 +52,12 @@ Set up a Google connection once on each Mac:
 The app requests read-only Sheets access and remembers your sign-in and Sheet.
 Refresh concentrations after changing the Sheet. Generation uses the displayed
 saved concentrations; data older than 24 hours requires confirmation before use.
+
+In **v1.0.4**, a temporary Google or network problem leaves your saved sign-in
+in place so you can retry. If the signed-in account cannot access your Sheet,
+press **Change Google account** and choose an account with access in Google's
+account chooser. After a successful account change, confirm the Sheet and
+refresh its concentrations before generating new workbooks.
 
 ## Prepare your inputs
 
